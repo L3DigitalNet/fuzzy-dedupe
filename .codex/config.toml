@@ -1,0 +1,12 @@
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "\"$(git rev-parse --show-toplevel)/.agents/hooks/agent-handoff/session-start\""
+timeout = 10
+statusMessage = "Loading agent handoff state..."
+
+# Figma's official remote MCP server (https://developers.figma.com/docs/figma-mcp-server/).
+# Authenticate once per machine with `codex mcp login figma`; tokens stay in the user's Codex store.
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
