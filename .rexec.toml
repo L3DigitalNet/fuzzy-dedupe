@@ -1,0 +1,7 @@
+schema = 1
+
+[tools]
+node = "24.4.0"
+
+[sync]
+git_context = true

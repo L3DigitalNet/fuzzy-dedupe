@@ -1,0 +1,80 @@
+[project_standards]
+schema_version = "1.0"
+catalog = "5"
+
+[standards.adr]
+enabled = true
+version = "1.6"
+
+[standards.adr.config]
+contract_version = "1.0"
+require_sections = true
+validate_amendments = false
+
+[standards.markdown-tooling]
+enabled = true
+version = "1.16"
+
+[standards.markdown-tooling.config]
+contract_version = "1.1"
+
+[[standards.markdown-tooling.config.exclusions]]
+glob = "docs/specs/fuzzy_dedupe_spec.md"
+applies_to = "both"
+reason = "Preserve the existing house-format product and architecture draft until it is independently revised."
+
+[[standards.markdown-tooling.config.exclusions]]
+glob = ".agents/skills/agent-handoff/**"
+applies_to = "both"
+reason = "The Agent Handoff package locks these skill files."
+
+[[standards.markdown-tooling.config.exclusions]]
+glob = ".claude/skills/agent-handoff/**"
+applies_to = "both"
+reason = "The Agent Handoff package locks these skill files."
+
+[[standards.markdown-tooling.config.exclusions]]
+glob = ".agents/skills/figma-*/**"
+applies_to = "both"
+reason = "Vendored verbatim from figma/mcp-server-guide skills-figquery; refresh from upstream instead of reformatting."
+
+[standards.project-spec]
+enabled = true
+version = "1.11"
+
+[standards.project-spec.config]
+contract_version = "1.1"
+include_patterns = ["docs/specs/canonical/**/*.md"]
+default_profile = "standard"
+
+[standards.cli-documentation]
+enabled = true
+version = "1.6"
+
+[standards.cli-documentation.config]
+contract_version = "1.0"
+profile = "script"
+usage_ownership = "managed"
+ci = { enabled = false }
+
+[standards.agent-handoff]
+enabled = true
+version = "latest"
+
+[standards.agent-handoff.config]
+contract_version = "1.1"
+startup = "automatic"
+harnesses = ["codex"]
+
+[standards.github-workflow]
+enabled = true
+version = "1.10"
+
+[standards.github-workflow.config]
+organization = "L3DigitalNet"
+harnesses = ["codex"]
+admission_floor = "e8b32886101d14fd7da344e2a7fc5862d04c1255"
+
+[standards.project-toolbox]
+enabled = true
+version = "1.1"
