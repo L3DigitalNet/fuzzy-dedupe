@@ -10,3 +10,11 @@ statusMessage = "Loading agent handoff state..."
 # Authenticate once per machine with `codex mcp login figma`; tokens stay in the user's Codex store.
 [mcp_servers.figma]
 url = "https://mcp.figma.com/mcp"
+
+# Upstash Context7 remote MCP server (https://context7.com/docs): version-specific library docs.
+# Mirrors the Claude `context7` plugin. `enabled = true` is required: project tables merge over a
+# user-level `[mcp_servers.context7]`, which may set `enabled = false` and supply the API-key header
+# through `env_http_headers`. No credential lives here; without that header, use is keyless and rate-limited.
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+enabled = true

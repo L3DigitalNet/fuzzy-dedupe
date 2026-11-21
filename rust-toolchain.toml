@@ -1,0 +1,6 @@
+# Pins the compiler for the workstation and the rexec worker; rustup installs it on first use.
+# rust-analyzer is listed because a pinned toolchain does not inherit components added to `stable`.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy", "rust-analyzer"]
+profile = "minimal"
