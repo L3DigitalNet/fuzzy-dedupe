@@ -10,7 +10,8 @@ last_reviewed: '2026-11-21'
 supersedes: null
 superseded_by: null
 related:
-  adrs: []
+  adrs:
+    - 'adr-0001-fuzzy-dedupe-use-egui-for-the-v1-desktop-ui'
   tickets: []
   repositories: []
   prior_specs: []
@@ -32,6 +33,7 @@ The owner has approved the product name, independent Rust implementation, licens
 | 0.3 | 2026-11-19 | Recorded the project name, GPL-3.0-only license, and from-scratch implementation. |
 | 0.4 | 2026-11-19 | Converted v0.3 to the Standard profile, assigned requirement IDs, and linked proposed verification to those IDs. |
 | 0.5 | 2026-11-21 | Answered OQ-002 (plain-text-only V1) and OQ-003 (Linux-only V1, portable to macOS and Windows later); added C-013, C-014, WH-003, WH-004 and NFR-008. |
+| 0.6 | 2026-11-21 | Answered OQ-004: egui/eframe selected by ADR 0001, with Slint as the fallback. Added NG-003 (no assistive-technology support) and narrowed NFR-005 to keyboard operation and display scaling. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
@@ -94,6 +96,7 @@ Archive traversal, OCR, encrypted-document access, and extraction from embedded 
 | --- | --- | --- |
 | NG-001 | Edit or merge source documents. | The approved review workflow is read-only. |
 | NG-002 | Infer semantic similarity with embeddings or language models. | The product compares observable text content using conventional algorithms. |
+| NG-003 | Support assistive technologies such as screen readers. | Owner decision (2026-11-21): the project provides no disability or screen-reader support. Keyboard operation and display scaling remain ordinary usability requirements (NFR-005). |
 
 ### 2.3 Won't Have in v1 (deferred — not never)
 
@@ -138,7 +141,7 @@ Safety and evidence take precedence over aggressive cleanup. A high fuzzy score 
 
 ### 3.3 Assumptions
 
-The plain-text-only V1 format boundary and the Linux-only V1 release are owner-confirmed (C-013, C-014). The following remain proposed: egui/eframe, SQLite, specific crates, Linux package formats, similarity metrics, grouping policy, persistent caches, and rename/move/copy operations. Compact table-first findings, prominent side-by-side comparison, and popup-based supporting tasks are now approved UI direction, not unresolved layout proposals.
+The plain-text-only V1 format boundary and the Linux-only V1 release are owner-confirmed (C-013, C-014). egui/eframe is the selected UI framework ([ADR 0001](../../adr/adr-0001-use-egui-for-the-v1-desktop-ui.md)), final once the MS-1 prototype passes. The following remain proposed: SQLite, specific crates, Linux package formats, similarity metrics, grouping policy, persistent caches, and rename/move/copy operations. Compact table-first findings, prominent side-by-side comparison, and popup-based supporting tasks are now approved UI direction, not unresolved layout proposals.
 
 Exact duplicate detection is strongly implied by the application's purpose. Side-by-side comparison is owner-confirmed; safe bulk deletion remains a core recommendation supporting the approved cleanup flow. More extensive file management is optional scope, not a reason to delay a useful first release. The specific layout measurements and state contracts in §11 are implementation guidance for the approved design, not evidence that they have been tested in a working application.
 
@@ -196,7 +199,7 @@ The source labels in §7.1 (for example, DISC 01 for the first discovery row) id
 
 The owner confirmed fuzzy discovery from text content, cleanup within the GUI, and the compact Findings and Compare workspaces with read-only paired panes and supporting popups. Exact matching is strongly implied and recommended. The detailed discovery, scoring, grouping, retention, bulk cleanup and safety rules form the recommended implementation baseline. Layout measurements and state contracts guide implementation of the approved design.
 
-Priority applies within that baseline. **Must** denotes a proposed release gate and **Should** an important, deferrable capability. Interface and data contracts are Must within the proposed baseline. Framework, store, matching algorithms, default thresholds, numerical performance budgets and exposure of permanent deletion remain open choices.
+Priority applies within that baseline. **Must** denotes a proposed release gate and **Should** an important, deferrable capability. Interface and data contracts are Must within the proposed baseline. The UI framework is selected by ADR 0001. Store, matching algorithms, default thresholds, numerical performance budgets and exposure of permanent deletion remain open choices.
 
 ### 7.1 Functional Requirements
 
@@ -235,7 +238,7 @@ Priority applies within that baseline. **Must** denotes a proposed release gate 
 | NFR-002 | Accuracy | The system shall evaluate candidate retrieval separately from final classification on held-out document families. | Report retrieval recall and pruning, then final precision and recall by relation, profile and threshold. All labeled exact copies are correctly handled. | Must |
 | NFR-003 | File safety | The system shall prevent wrong-target operations and silent destructive fallback in the cleanup safety suite. | The suite records zero wrong-target deletions and zero silent permanent deletions following Trash failure. | Must |
 | NFR-004 | Privacy | The system shall support local scanning and comparison without an account, network access or default uploads. | With networking disabled, scanning and comparison complete. Default operation sends no text, paths, hashes, fingerprints, telemetry or crash reports. | Must |
-| NFR-005 | Accessibility | The system shall keep Findings, Compare and popup controls operable with keyboard navigation, display scaling and assistive technology. | At supported scales, focus and actions remain reachable, side labels distinguish changes without color, and supported-platform screen-reader checks identify controls and file sides. | Must |
+| NFR-005 | Keyboard and scaling | The system shall keep Findings, Compare and popup controls operable with keyboard navigation and display scaling. | At supported scales, focus and actions remain reachable by keyboard and side labels distinguish changes without color. Assistive-technology support is a non-goal (NG-003). | Must |
 | NFR-006 | Performance measurement | The system shall characterize cold and incremental scan cost on representative and pathological collections. | Results record hardware, storage, corpus distribution, settings, cache state, elapsed time, bytes read, CPU use, peak memory, cache growth, hit rate and candidate count. | Should |
 | NFR-007 | Visual hierarchy | The system shall allocate at least 80% of work-area height to the main review surface in each reference workspace. | At 1600 × 1000 logical units, measure the grouped table in Findings and the paired region in Compare against their respective work areas. | Must |
 | NFR-008 | Portability | The system shall confine operating-system-specific behavior to platform adapter interfaces outside the domain, core, analyzer and storage components. | Path encoding, file identity, hardlink and reflink detection, Trash, file dialogs, external opening and per-user storage locations are reached only through adapters. Platform-conditional compilation appears only in adapter implementations, and the Linux adapters pass the release suite. | Must |
@@ -321,7 +324,7 @@ The owner selected a new Rust desktop application and GPL-3.0-only. GUI framewor
 | Layer | Recommendation | Role and rationale |
 | --- | --- | --- |
 | Language/build | Rust, Cargo, pinned toolchain and committed lockfile | One primary implementation language and reproducible dependency resolution. |
-| GUI | egui + eframe | Rust desktop interface; keep GUI-specific types out of the engine. [S03] |
+| GUI | egui + eframe | Selected by [ADR 0001](../../adr/adr-0001-use-egui-for-the-v1-desktop-ui.md); final once the MS-1 prototype passes. Keep GUI-specific types out of the engine. [S03] |
 | Result tables | egui_extras | Scrolling, resizable table support; application-level virtualization still needs validation. [S04] |
 | Persistence | SQLite + rusqlite | Local metadata, scan state, results, and operation records. [S19] |
 | Migrations | refinery or a small reviewed SQL migration layer | Versioned schema changes; refinery supports rusqlite. [S20] |
@@ -355,11 +358,11 @@ Keep the dependency set lean. MinHash/LSH and passage-index integration should l
 
 | Option | Why it was considered | Recommendation |
 | --- | --- | --- |
-| egui/eframe | Rust interface, flexible custom views, table support. | Leading choice; validate the actual review workflow before freezing. [S03], [S04] |
-| Slint | Declarative UI with Rust integration. | Strong alternative if the prototype demonstrates better fit. [S05] |
-| Iced | Rust GUI with an Elm-inspired architecture. | Viable alternative; current documentation calls it experimental. [S06] |
-| Tauri 2 + Svelte | Web UI ecosystem with a Rust backend. | Not preferred for V1; introduces a frontend stack and Linux WebKitGTK considerations. [S07] |
-| Qt + CXX-Qt | Qt/Rust interoperability and another desktop architecture option. | Consider only when requirements justify the bridge and build complexity. [S08] |
+| egui/eframe | Rust interface, flexible custom views, table support. | **Selected** (ADR 0001); final once the MS-1 prototype passes. [S03], [S04] |
+| Slint | Declarative UI with Rust integration. | Designated fallback if egui fails the MS-1 table or paired-pane criteria (ADR 0001). [S05] |
+| Iced | Rust GUI with an Elm-inspired architecture. | Rejected (ADR 0001): no built-in table or selectable text; experimental. [S06] |
+| Tauri 2 + Svelte | Web UI ecosystem with a Rust backend. | Rejected (ADR 0001): adds a web frontend stack and a dependency on the distribution's WebKitGTK. [S07] |
+| Qt + CXX-Qt | Qt/Rust interoperability and another desktop architecture option. | Rejected (ADR 0001): adds a C++/QML toolchain and a frequently changing bridge. [S08] |
 
 The egui project explicitly does not target native-looking widgets and warns of breaking changes. Pin and test compatible GUI dependencies rather than upgrading automatically. [S03]
 
@@ -689,7 +692,7 @@ The file key is `d5tA6ap1tH4cTDaJiwve89`. API node identifiers use colons; Figma
 
 The earlier page, **Archive · Initial exploration** (`0:1`), and its group-card workbench, dedicated configuration screens, separate cleanup/outcome pages, and compact unified-diff example are historical material. They are **not** the current layout specification. Earlier downloadable design documents and research recommendations must not override this revision.
 
-Precedence is: explicit owner decisions and safety requirements → this current compact-UI contract → current Figma frames/components → older research and archived examples. Geometry is a reference target, not a reason to break text scaling or accessibility. Do not infer new business rules from decorative elements or sample data.
+Precedence is: explicit owner decisions and safety requirements → this current compact-UI contract → current Figma frames/components → older research and archived examples. Geometry is a reference target, not a reason to break text or display scaling. Do not infer new business rules from decorative elements or sample data.
 
 Use **Fuzzy DeDupe** as the implemented application's visible product name. The linked Figma file, frame names, and component identifiers may retain earlier generic naming; preserve their node IDs and use the confirmed product name in application titles and project documentation.
 
@@ -745,7 +748,7 @@ The approved frames are **1600 × 1000 design units**. Map the geometry to logic
 | Pinned document identity header | 54 high | Filename, accessible full path, and side/protection status. |
 | Visible text area per pane | 744 high | Text uses available space; headers and controls stay compact. |
 
-At the reference window size, the findings table occupies about **88% of the work area's height**; the comparison region occupies about **85%**. These proportions are useful regression targets. They are not minimum-size guarantees, and should not be enforced by clipping content under accessibility scaling.
+At the reference window size, the findings table occupies about **88% of the work area's height**; the comparison region occupies about **85%**. These proportions are useful regression targets. They are not minimum-size guarantees, and should not be enforced by clipping content under text or display scaling.
 
 The layouts should read as:
 
@@ -811,7 +814,7 @@ The paired panes share a resizable split and show pinned file identities. At the
 8. Original decoded text is the default evidence. A normalized view, when offered, is explicit and must preserve a path back to original differences.
 9. Load only the requested evidence and visible text ranges. For truncated/oversized/unreadable previews, state what could not be displayed; never infer equality from a blank pane.
 
-The metadata line contains match type, a named pairwise score, and unmatched content on both sides. Definitions/profile details belong in an accessible tooltip or details popup, not in a permanent large evidence card.
+The metadata line contains match type, a named pairwise score, and unmatched content on both sides. Definitions/profile details belong in a keyboard-reachable tooltip or details popup, not in a permanent large evidence card.
 
 **Keep both** records a no-removal decision for the displayed pair and clears pending removal intent for that pair where applicable; it must not silently change unrelated members of a larger group. **Queue right file…** identifies the actual target by ID and path, and opens the review acknowledgment when required. The comparison reference is an evidence anchor; protection is a separate restriction, even when the example file has both roles.
 
@@ -867,13 +870,13 @@ The following colors were read from the existing Figma semantic variables. Reuse
 
 Use the `DD/Compact/*` style family for this revision, not the larger `DD/title` and archived page headings. Shared compact controls use a 5-unit radius in the inspected frames. Routine rows remain rectangular; shadows belong to floating dialogs, not every table section. Keep selected, queued, protected, stale, and disabled states visually and behaviorally distinct.
 
-Preserve usable hit targets despite compact glyphs: the 16-unit checkbox is a visual mark inside an adequately sized cell target, not the entire clickable area. Icons must have accessible names; important destructive controls retain text labels. Obtain licensed font assets through the project's dependency/asset process and provide appropriate fallback coverage; the handoff does not distribute font files.
+Preserve usable hit targets despite compact glyphs: the 16-unit checkbox is a visual mark inside an adequately sized cell target, not the entire clickable area. Icons need a visible label or tooltip; important destructive controls retain text labels. Obtain licensed font assets through the project's dependency/asset process and provide appropriate fallback coverage; the handoff does not distribute font files.
 
 Figma's imported Simple Design System components are visual references. They do not require React, a browser runtime, a web component package, or Figma connectivity in the application. Recreate their behavior with the chosen Rust UI stack and centrally owned widgets.
 
 ### 11.8 Recommended Rust UI modules and state ownership
 
-The approved layout does not change the recommended Rust/egui architecture. The module names below are proposed implementation boundaries, not claims that source code already exists. [S03], [S04]
+The approved layout does not change the Rust/egui architecture selected by ADR 0001. The module names below are proposed implementation boundaries, not claims that source code already exists. [S03], [S04]
 
 ```text
 crates/app/src/
@@ -920,25 +923,25 @@ Persist useful local presentation preferences, but do not restore deletion autho
 
 ### 11.9 Rendering, asynchronous work, and scaling
 
-For the recommended egui implementation, compose the shell from bounded regions and keep the table or paired viewer as the flexible remainder. Prefer the existing table/scrolling facilities where they meet the requirements; exact API calls must be checked against the pinned crate versions during implementation. The architecture here does not prescribe an unverified code generator or a browser frontend. [S03], [S04]
+For the egui implementation (ADR 0001), compose the shell from bounded regions and keep the table or paired viewer as the flexible remainder. Prefer the existing table/scrolling facilities where they meet the requirements; exact API calls must be checked against the pinned crate versions during implementation. The architecture here does not prescribe an unverified code generator or a browser frontend. [S03], [S04]
 
 Flatten expanded group headers/member rows into a visible-row projection with stable row keys. Render only the visible range plus a small overscan margin. Rebuild projections on data/filter/sort/expansion changes—not on every frame. Keep loading, empty, error, and populated table states within the same geometry. If paging is used internally, preserve group context across page boundaries.
 
 Diff decoding, matching, and expensive text layout run through bounded worker/cache services. The UI consumes bounded event batches and coalesced progress; it does not wait for file I/O. Cancel or ignore superseded comparison requests. Keep interactive comparison work responsive while a scan runs, subject to the shared resource scheduler in §8.7.
 
-A common aligned-row model is preferable to two unrelated text widgets with loosely synchronized scrollbars. Cache row heights for the current wrap widths/font scale. Do not instantiate a complete editable multiline control for each entire large file merely to obtain text selection. Validate read-only selection, scrolling, and accessibility on representative files before freezing the widget implementation.
+A common aligned-row model is preferable to two unrelated text widgets with loosely synchronized scrollbars. Cache row heights for the current wrap widths/font scale. Do not instantiate a complete editable multiline control for each entire large file merely to obtain text selection. Validate read-only selection, scrolling, and keyboard operation on representative files before freezing the widget implementation.
 
 Recommended frame-level measurements include event-queue size, rows rendered, comparison-load latency, layout-cache reuse, and cancellation responsiveness. Performance targets require measurement; a Figma frame is not evidence that a particular corpus size is supported.
 
-### 11.10 Resizing, accessibility, and keyboard behavior
+### 11.10 Resizing, scaling, and keyboard behavior
 
 The current approved comparison default stays **side by side**. Do not silently adopt the old 1280 × 800 unified-diff design. At smaller window sizes, collapse the rail, move secondary controls into menus, and reduce optional table columns before reducing document readability. A user-selected unified view can be considered separately; it is not a replacement for the approved paired view.
 
-At increased text scale, grow rows and controls as needed, constrain dialogs to the usable viewport, and permit body scrolling with fixed action footers. The 28-unit table row and 30-unit control are default-density references, not immutable accessibility limits. Preserve full-path access through keyboard-reachable details/copy actions; hover alone is insufficient.
+At increased text scale, grow rows and controls as needed, constrain dialogs to the usable viewport, and permit body scrolling with fixed action footers. The 28-unit table row and 30-unit control are default-density references, not immutable limits under scaling. Preserve full-path access through keyboard-reachable details/copy actions; hover alone is insufficient.
 
 Proposed keyboard mappings must follow native platform conventions and avoid text-entry/IME conflicts: Tab traverses regions/controls; arrows navigate the table; Enter opens comparison; Space acts on the focused queue control subject to protection/review rules; Escape closes a popup or returns from comparison without committing. No single-key unconfirmed filesystem deletion is allowed. Opening/closing dialogs restores focus and must not accidentally dispatch a command to the underlying table.
 
-Use distinct semantics for row focus, checked queue state, and protection. Supply accessible names and status announcements for scans, selection counts, blocked operations, and results. Read-only text, virtualized groups, resizable splitters, and popup focus containment require native accessibility testing; visual contrast and an attractive screenshot do not establish conformance.
+Keep row focus, checked queue state, and protection visually and behaviorally distinct. Show status for scans, selection counts, blocked operations, and results in the compact status area or the owning popup. Assistive-technology support, such as screen-reader names and announcements, is a non-goal (NG-003); keyboard operation and display scaling remain required (NFR-005).
 
 ### 11.11 Acceptance checklist for the implementing agent
 
@@ -948,7 +951,7 @@ The following are implementation acceptance requirements derived from the approv
 | --- | --- |
 | UI check 01 | Only Findings and Compare are permanent workspaces; New scan, Settings, and Cleanup open popups without losing workspace state. |
 | UI check 02 | At the reference size, the findings table and comparison region each occupy at least 80% of their respective work-area height; no competing card dashboard or persistent inspector is introduced. |
-| UI check 03 | Compact row/control sizing and `DD/Compact/*` typography match the reference while scaling accessibly. |
+| UI check 03 | Compact row/control sizing and `DD/Compact/*` typography match the reference while scaling with text and display settings. |
 | UI check 04 | Sorting, filtering, collapsing groups, and returning from comparison do not change queued membership or the identity of a targeted file. |
 | UI check 05 | The table contains defined relation/score semantics; focus and cleanup intent are independently visible. |
 | UI check 06 | Paired diffs remain aligned through inserted/deleted lines and different wrapping heights; source line numbers and unique-text counts remain correct. |
@@ -958,7 +961,7 @@ The following are implementation acceptance requirements derived from the approv
 | UI check 10 | Cleanup review states exact targets/destination; commit is single-flight; Trash failure cannot become permanent deletion. |
 | UI check 11 | Partial, failed, skipped, and uncertain outcomes remain visible in the same popup and operation journal; retry does not replay completed actions. |
 | UI check 12 | Large-result table scrolling and large-file comparisons remain responsive using bounded background work and rendering. |
-| UI check 13 | Keyboard-only operation, focus restoration, long paths, Unicode, display scaling, and screen-reader behavior are tested on supported platforms. |
+| UI check 13 | Keyboard-only operation, focus restoration, long paths, Unicode, and display scaling are tested on supported platforms. |
 | UI check 14 | Missing roots, empty scans, no filter matches, decoding errors, stale evidence, scan cancellation, and unavailable Trash have actionable states without extra permanent screens. |
 | UI check 15 | Future media can replace the comparison renderer/metrics without changing the shared findings, queue, protection, and operation model. |
 
@@ -1131,7 +1134,7 @@ These are planned checks. Record execution evidence against the canonical ID whe
 | NFR-002 | Split tuning and evaluation by source family. Score renamed copies, revisions, containment, reordering, boilerplate and unrelated pairs. Inspect retrieval and final-score reports independently. | Not Started |
 | NFR-003 | Inject path replacement, changed identity, missing mounts, permission errors and Trash rejection in temporary trees. Compare intended targets and actual mutations. | Not Started |
 | NFR-004 | Scan and compare offline, then observe outbound activity under default settings during the same workflow and diagnostic handling. | Not Started |
-| NFR-005 | Exercise both workspaces and popups using keyboard and screen reader, enlarged text, long Unicode paths and visible focus. Check modal shortcut blocking and focus restoration. | Not Started |
+| NFR-005 | Exercise both workspaces and popups using only the keyboard, with enlarged text, display scaling, long Unicode paths and visible focus. Check modal shortcut blocking and focus restoration. | Not Started |
 | NFR-006 | Benchmark the same corpus cold and incrementally, repeat on a boilerplate-heavy corpus and inspect the recorded environment and measurements. Numerical release budgets await owner review. | Not Started |
 | NFR-007 | Measure both regions and their work areas in reference-size captures. Compare typography and compact controls against the current design, then check scaled text for clipping. | Not Started |
 | NFR-008 | Review adapter boundaries and search portable components for platform-conditional compilation and direct operating-system calls. Run the Linux adapter suite; where macOS and Windows compile checks exist, confirm the portable components build for those targets. | Not Started |
@@ -1201,7 +1204,7 @@ These are dependency-ordered milestones, not time estimates or a commitment to r
 | Phase | Deliverable | Exit condition |
 | --- | --- | --- |
 | MS-0 · Freeze the baseline | Record Fuzzy DeDupe, GPLv3, independent implementation, the plain-text-only V1 format scope, and the Linux-only V1 release. | New repository initialized with the selected license and consistent metadata; owner-confirmed boundaries recorded; excluded features remain excluded. |
-| MS-1 · Validate the UI shell | Implement §11: two compact workspaces, large table/paired panes, popup host, stable selection, and background progress. | Fixture-based visual comparison against current Figma, state-restoration tests, and native GUI/accessibility validation pass; GUI choice accepted. |
+| MS-1 · Validate the UI shell | Implement §11: two compact workspaces, large table/paired panes, popup host, stable selection, and background progress. | Fixture-based visual comparison against current Figma, state-restoration tests, and native GUI validation pass; ADR 0001's egui choice is confirmed or superseded. |
 | MS-2 · Build discovery and exact matching | File snapshots, bounded traversal, hashes, verification, basic persistence. | Exact fixtures and filesystem edge cases pass without live cleanup enabled. |
 | MS-3 · Evaluate text similarity | Normalization, candidate retrieval alternatives, scoring, labeled corpus. | Measured precision/recall and cost justify selected profiles and algorithms. |
 | MS-4 · Integrate review | Table-backed groups, paired evidence, original-text previews, popup settings, cache validity, cancellation. | End-to-end discovery-to-review works without hidden coverage assumptions; current scan profiles remain immutable. |
@@ -1226,7 +1229,7 @@ An em dash means the source did not assign an owner, deadline, or blocking statu
 | OQ-001 | What is the project name? (Source decision 01.) | **Confirmed:** Fuzzy DeDupe. Apply the name to the application and project documentation. | No; answered. | — | Answered; application and documentation naming use this choice. | Answered |
 | OQ-002 | Does V1 include extracted document formats as well as plain text? (Source decision 02.) | **Confirmed:** V1 is plain text only. PDF, DOCX, ODT, and other extracted formats are excluded from V1 and deferred (C-013, WH-003). | No; answered. | — | Answered 2026-11-21. | Answered |
 | OQ-003 | Which operating systems receive initial release support? (Source decision 03.) | **Confirmed:** V1 is released for Linux only, developed so that macOS and Windows support can be added later (C-014, NFR-008, WH-004). | No; answered. | — | Answered 2026-11-21. | Answered |
-| OQ-004 | Does egui/eframe satisfy the approved compact UI in a native implementation? (Source decision 04.) | egui/eframe remains pending native implementation validation of the approved compact Figma layout. Visual approval does not validate the framework. | Yes, for accepting the GUI framework without its validation gate. | — | At native UI validation, before treating the framework as validated. | Open |
+| OQ-004 | Does egui/eframe satisfy the approved compact UI in a native implementation? (Source decision 04.) | **Confirmed:** egui/eframe ([ADR 0001](../../adr/adr-0001-use-egui-for-the-v1-desktop-ui.md)), final once the MS-1 prototype passes; Slint is the fallback. | No; answered. | — | Answered 2026-11-21. | Answered |
 | OQ-005 | Which fuzzy algorithms, indexes, parameters, defaults, and quality targets will be selected? (Source decision 05.) | Benchmark document resemblance and passage containment separately. Algorithms and their defaults remain choices to validate rather than settled conclusions. | — | — | Before freezing the matching design and its defaults; no date specified. | Open |
 | OQ-006 | Which tokenization and normalization profiles will be used? (Source decision 06.) | Conservative defaults, visible settings, and versioned artifacts are the recommended approach; final profiles remain open. | — | — | — | Open |
 | OQ-007 | What engine policy defines result grouping and group/category counts? (Source decision 07.) | Preserve reference-relative pair evidence in a grouped table. Group/category-count semantics still require an explicit engine policy; the approved table layout does not settle that policy. | — | — | Before relying on group/category-count semantics; no date specified. | Open |
@@ -1258,11 +1261,11 @@ These are the source's nine principal risks. Their inclusion records required mi
 
 The confirmed product and implementation direction is **Fuzzy DeDupe**, written from scratch in **Rust** under **GPLv3 (`GPL-3.0-only`)**. The approved interaction model is a table-dominant **Findings** workspace, a large paired-pane **Compare** workspace, and compact popups for supporting tasks, as specified in §11. These choices remain resolved while GUI framework fit is validated.
 
-Source §18 recommends a **text-only V1 with read-only review**, centered on discovering and explaining duplicate relationships and safely removing user-selected files. “Read-only” describes document review, not an exclusion of the cleanup workflow. A reusable local core, SQLite persistence, and bounded background processing remain the recommended foundation. egui/eframe and the similarity algorithms require prototype or benchmark validation; this section does not promote those recommendations to confirmed choices.
+Source §18 recommends a **text-only V1 with read-only review**, centered on discovering and explaining duplicate relationships and safely removing user-selected files. “Read-only” describes document review, not an exclusion of the cleanup workflow. A reusable local core, SQLite persistence, and bounded background processing remain the recommended foundation. egui/eframe is selected by ADR 0001 and becomes final once the MS-1 prototype passes. The similarity algorithms require benchmark validation; this section does not promote them to confirmed choices.
 
 Design the shared infrastructure for multiple media types now, while implementing only the text analyzer. Later formats should extend decoding, fingerprints, indexes, metrics, and preview renderers without replacing the cleanup safety model. Incremental media expansion does not establish release dates or a universal similarity score.
 
-The owner has since confirmed a plain-text-only V1 and a Linux-only V1 release with an architecture portable to macOS and Windows. The remaining unresolved issues are GUI fit, algorithm parameters and quality targets, optional file-management breadth, and the Trash backend. **No throughput, recall, memory, or recovery guarantee has yet been demonstrated on an implementation.**
+The owner has since confirmed a plain-text-only V1 and a Linux-only V1 release with an architecture portable to macOS and Windows. The owner also selected egui/eframe and excluded assistive-technology support. The remaining unresolved issues are egui's fit in the MS-1 prototype, algorithm parameters and quality targets, optional file-management breadth, and the Trash backend. **No throughput, recall, memory, or recovery guarantee has yet been demonstrated on an implementation.**
 
 The retained product vision is to find identical files, discover substantially overlapping text, show what differs, and let the user clean up with clear evidence and controlled actions, without editing documents or relying on AI.
 
