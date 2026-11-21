@@ -2,6 +2,24 @@ schema = 1
 
 [tools]
 node = "24.4.0"
+# Rust itself is deliberately undeclared: rexec cannot converge mise's `rust` core tool, because
+# mise installs it through rustup into CARGO_HOME, outside rexec's store. The worker's own rustup
+# provides cargo, and rust-toolchain.toml pins the toolchain on both the workstation and the worker.
+# Declare `rust` (and use cargo: tools) once L3DigitalNet/rexec#26 is fixed.
+
+# Spec §17.2 gates as prebuilt release binaries; each checksum is the release asset's GitHub digest.
+# Bump the version and checksum together.
+[tools."github:nextest-rs/nextest"]
+version = "cargo-nextest-0.9.152"
+checksum = "sha256:d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a"
+
+[tools."github:EmbarkStudios/cargo-deny"]
+version = "0.22.0"
+checksum = "sha256:98c56e6a408bfa5c3c60744b6015aaa6aa08f743fdeb88386d06fca035bb1786"
+
+[tools."github:rustsec/rustsec"]
+version = "cargo-audit/v0.23.0"
+checksum = "sha256:b77993532b253fcbf550996d7716465ec3d734d4e74e7f87bfb65a19add0fb59"
 
 [sync]
 git_context = true

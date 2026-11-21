@@ -1,1 +1,7 @@
-{ "enabledPlugins": { "figma@claude-plugins-official": true } }
+{
+	"enabledPlugins": {
+		"figma@claude-plugins-official": true,
+		"rust-analyzer-lsp@claude-plugins-official": true,
+		"context7@anthropic-plugin-directory": true
+	}
+}
