@@ -6,7 +6,7 @@ profile: standard
 owner: 'L3DigitalNet'
 implementer: 'Fuzzy DeDupe implementation team'
 created: '2026-11-19'
-last_reviewed: '2026-11-19'
+last_reviewed: '2026-11-21'
 supersedes: null
 superseded_by: null
 related:
@@ -20,7 +20,7 @@ related:
 
 Draft · Standard profile · SPEC-FZDP
 
-The owner has approved the product name, independent Rust implementation, license, text-only first release, and compact desktop interaction model. The technical design and release gates below remain proposals unless identified as confirmed.
+The owner has approved the product name, independent Rust implementation, license, plain-text-only first release, Linux-only first release, and compact desktop interaction model. The technical design and release gates below remain proposals unless identified as confirmed.
 
 [Requirements](#7-requirements) · [Architecture](#8-architecture-and-design) · [UI handoff](#11-ui-pages--api-endpoints) · [Cleanup safety](#12-error-handling-and-recovery) · [Verification matrix](#173-requirement-to-test-traceability) · [Milestones](#19-implementation-plan) · [Open decisions](#21-open-questions-and-decisions)
 
@@ -31,6 +31,7 @@ The owner has approved the product name, independent Rust implementation, licens
 | 0.2 | 2026-11-11 | Recorded the approved compact desktop design and Figma handoff. |
 | 0.3 | 2026-11-19 | Recorded the project name, GPL-3.0-only license, and from-scratch implementation. |
 | 0.4 | 2026-11-19 | Converted v0.3 to the Standard profile, assigned requirement IDs, and linked proposed verification to those IDs. |
+| 0.5 | 2026-11-21 | Answered OQ-002 (plain-text-only V1) and OQ-003 (Linux-only V1, portable to macOS and Windows later); added C-013, C-014, WH-003, WH-004 and NFR-008. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
@@ -76,10 +77,12 @@ The user reviews pairwise evidence in Findings and Compare before approving any 
 | Image, audio/music, and video analysis | Later releases |
 | Full-text search index or live filesystem watching | Deferred |
 | Public CLI/API, dynamic plugins, distributed scanning | Deferred unless separately approved |
+| Plain-text files as the only V1 input format | Confirmed (C-013) |
+| Linux as the only V1 release platform, with an architecture portable to macOS and Windows | Confirmed (C-014) |
 
-**Recommended initial boundary: decodable plain-text files.** Examples include TXT, Markdown, source files, configuration files, and text logs. These formats should initially be analyzed as text, not parsed or executed as programs.
+**Confirmed V1 boundary: decodable plain-text files (C-013).** Examples include TXT, Markdown, source files, configuration files, and text logs. V1 analyzes these files as text, not parsing or executing them as programs.
 
-The user specified text documents but did not explicitly decide whether that includes PDF, DOCX, ODT, RTF, or other containers requiring extraction. Therefore, this document recommends deferring those extractors; it does not treat that recommendation as an owner-confirmed exclusion.
+The owner confirmed that V1 is plain text only. PDF, DOCX, ODT, RTF, and other containers requiring extraction are excluded from V1 and deferred (WH-003); V1 includes no extractors for them.
 
 HTML and structured text can be read literally in V1. Rendering HTML, stripping markup, understanding source-code syntax, interpreting configuration semantics, and normalizing structured records are separate enhancements. They must not be implied merely because the file is readable.
 
@@ -98,6 +101,8 @@ Archive traversal, OCR, encrypted-document access, and extraction from embedded 
 | --- | --- | --- |
 | WH-001 | Image, audio, and video analysis. | The text workflow is validated and the next analyzer meets the expansion gate in §8.8. |
 | WH-002 | Public CLI, dynamic plugins, and distributed scanning. | A separate product decision establishes a need. |
+| WH-003 | Extracted document formats, including PDF, DOCX, ODT, and RTF. | The plain-text workflow is validated and a separate product decision adds an extractor. |
+| WH-004 | macOS and Windows release support, including their packaging, signing, and notarization. | The Linux V1 is validated and the owner selects the next platform. |
 
 The proposed order is correctness and data safety, clarity of match evidence, usable review, bounded resource consumption, and then raw throughput. All analysis should work locally without accounts, remote services, telemetry, model downloads, or internet connectivity.
 
@@ -133,7 +138,7 @@ Safety and evidence take precedence over aggressive cleanup. A high fuzzy score 
 
 ### 3.3 Assumptions
 
-The following remain proposed: egui/eframe, SQLite, specific crates, Linux-first release packaging, plain-text-only format boundaries, similarity metrics, grouping policy, persistent caches, and rename/move/copy operations. Compact table-first findings, prominent side-by-side comparison, and popup-based supporting tasks are now approved UI direction, not unresolved layout proposals.
+The plain-text-only V1 format boundary and the Linux-only V1 release are owner-confirmed (C-013, C-014). The following remain proposed: egui/eframe, SQLite, specific crates, Linux package formats, similarity metrics, grouping policy, persistent caches, and rename/move/copy operations. Compact table-first findings, prominent side-by-side comparison, and popup-based supporting tasks are now approved UI direction, not unresolved layout proposals.
 
 Exact duplicate detection is strongly implied by the application's purpose. Side-by-side comparison is owner-confirmed; safe bulk deletion remains a core recommendation supporting the approved cleanup flow. More extensive file management is optional scope, not a reason to delay a useful first release. The specific layout measurements and state contracts in §11 are implementation guidance for the approved design, not evidence that they have been tested in a working application.
 
@@ -155,6 +160,8 @@ Throughout the technical sections, **must** identifies a condition of the recomm
 | C-010 | Use compact, streamlined controls and fewer main screens; use popup windows for settings. |
 | C-011 | The updated Figma compact-desktop design is the approved visual direction: Findings and Compare workspaces, with scan setup and cleanup also presented as popups. |
 | C-012 | Use GNU GPL version 3.0. This specification records the license as `GPL-3.0-only`, without an assumed grant for later versions. |
+| C-013 | V1 analyzes plain-text files only. Extracted document formats such as PDF, DOCX, ODT, and RTF are not part of V1. |
+| C-014 | V1 is released for Linux only. Develop it so that macOS and Windows support can be added later without redesigning the domain, analysis, storage, or cleanup-safety model. |
 
 The from-scratch implementation is a confirmed development decision, not a claim that a repository, codebase, or provenance audit already exists. dupeGuru may inform product research, but its source, tests, documentation, and bundled assets are not the starting implementation. Normal third-party libraries remain eligible after dependency and license review.
 
@@ -189,7 +196,7 @@ The source labels in §7.1 (for example, DISC 01 for the first discovery row) id
 
 The owner confirmed fuzzy discovery from text content, cleanup within the GUI, and the compact Findings and Compare workspaces with read-only paired panes and supporting popups. Exact matching is strongly implied and recommended. The detailed discovery, scoring, grouping, retention, bulk cleanup and safety rules form the recommended implementation baseline. Layout measurements and state contracts guide implementation of the approved design.
 
-Priority applies within that baseline. **Must** denotes a proposed release gate and **Should** an important, deferrable capability. Interface and data contracts are Must within the proposed baseline. Framework, store, matching algorithms, default thresholds, numerical performance budgets, initial platform coverage and exposure of permanent deletion remain open choices.
+Priority applies within that baseline. **Must** denotes a proposed release gate and **Should** an important, deferrable capability. Interface and data contracts are Must within the proposed baseline. Framework, store, matching algorithms, default thresholds, numerical performance budgets and exposure of permanent deletion remain open choices.
 
 ### 7.1 Functional Requirements
 
@@ -231,6 +238,7 @@ Priority applies within that baseline. **Must** denotes a proposed release gate 
 | NFR-005 | Accessibility | The system shall keep Findings, Compare and popup controls operable with keyboard navigation, display scaling and assistive technology. | At supported scales, focus and actions remain reachable, side labels distinguish changes without color, and supported-platform screen-reader checks identify controls and file sides. | Must |
 | NFR-006 | Performance measurement | The system shall characterize cold and incremental scan cost on representative and pathological collections. | Results record hardware, storage, corpus distribution, settings, cache state, elapsed time, bytes read, CPU use, peak memory, cache growth, hit rate and candidate count. | Should |
 | NFR-007 | Visual hierarchy | The system shall allocate at least 80% of work-area height to the main review surface in each reference workspace. | At 1600 × 1000 logical units, measure the grouped table in Findings and the paired region in Compare against their respective work areas. | Must |
+| NFR-008 | Portability | The system shall confine operating-system-specific behavior to platform adapter interfaces outside the domain, core, analyzer and storage components. | Path encoding, file identity, hardlink and reflink detection, Trash, file dialogs, external opening and per-user storage locations are reached only through adapters. Platform-conditional compilation appears only in adapter implementations, and the Linux adapters pass the release suite. | Must |
 
 ### 7.3 Interface Requirements
 
@@ -359,7 +367,9 @@ The GUI decision gate should implement the approved §11 compact layout and demo
 
 ### 8.5 Design Constraints
 
-Domain models must not depend on egui. Analyzers must not delete, rename, or edit source files. UI code must not implement similarity algorithms or write arbitrary database queries. File-operation decisions must pass through the application service rather than directly from a table callback to a filesystem call.
+Domain models must not depend on egui or on a specific operating system. Analyzers must not delete, rename, or edit source files. UI code must not implement similarity algorithms or write arbitrary database queries. File-operation decisions must pass through the application service rather than directly from a table callback to a filesystem call.
+
+Isolate operating-system behavior behind platform adapters (C-014, NFR-008). Linux supplies the only V1 implementations, but adapter interfaces must not encode Linux-only assumptions, such as inode-based identity, case-sensitive or byte-string-only paths, or a single Trash location, in their signatures. Prefer dependencies that also support macOS and Windows when they otherwise satisfy V1 requirements.
 
 The core may own trait-based access to storage, analysis, and file operations. Keep orchestration above those components to avoid cyclic dependencies. Avoid embedding SQL connections or GUI widgets in persisted match evidence.
 
@@ -1051,7 +1061,7 @@ A release candidate must demonstrate the approved UI acceptance checks in §11.1
 | Dependency security | `cargo audit` against RustSec advisories. [S42] |
 | Dependency policy | `cargo deny` for license/source/advisory policy; review the resolved dependency set against the selected `GPL-3.0-only` distribution terms. [S43] |
 | Diagnostics | Structured `tracing` events with content-sensitive redaction. [S24] |
-| Continuous integration | GitHub Actions with pinned toolchain, locked dependencies, and targeted OS jobs. |
+| Continuous integration | GitHub Actions with pinned toolchain and locked dependencies. Linux jobs are release gates; macOS and Windows compile checks are recommended to catch portability regressions early (NFR-008). |
 
 A successful build and unit suite do not demonstrate fuzzy-match quality. The corpus and its expected relationships are release artifacts, not disposable test scaffolding.
 
@@ -1124,6 +1134,7 @@ These are planned checks. Record execution evidence against the canonical ID whe
 | NFR-005 | Exercise both workspaces and popups using keyboard and screen reader, enlarged text, long Unicode paths and visible focus. Check modal shortcut blocking and focus restoration. | Not Started |
 | NFR-006 | Benchmark the same corpus cold and incrementally, repeat on a boilerplate-heavy corpus and inspect the recorded environment and measurements. Numerical release budgets await owner review. | Not Started |
 | NFR-007 | Measure both regions and their work areas in reference-size captures. Compare typography and compact controls against the current design, then check scaled text for clipping. | Not Started |
+| NFR-008 | Review adapter boundaries and search portable components for platform-conditional compilation and direct operating-system calls. Run the Linux adapter suite; where macOS and Windows compile checks exist, confirm the portable components build for those targets. | Not Started |
 | IR-001 | Enter Compare from a filtered, sorted, expanded and scrolled Findings table. Return and compare the full view state. | Not Started |
 | IR-002 | Toggle wrapping, linked scrolling and next/previous change on unequal-length lines with one-sided insertions. Check alignment, source line numbers and counts. | Not Started |
 | IR-003 | Open Settings from New scan. Cancel once and save once, inspect both drafts, then start a new scan and compare the new and previous profiles. | Not Started |
@@ -1141,9 +1152,9 @@ These are planned checks. Record execution evidence against the canonical ID whe
 
 ### 18.1 Runtime Environment
 
-Recommend Linux/Fedora as the initial validation environment, while avoiding Linux-only domain models. Windows and macOS build checks are valuable early; full release support and signing/notarization remain decisions rather than existing commitments.
+V1 is released for Linux only (C-014), with Fedora as the initial validation environment. Avoid Linux-only domain models and keep operating-system behavior behind the adapters required by NFR-008. macOS and Windows compile checks are valuable early but are not V1 release gates. Release support, packaging, signing, and notarization for those platforms are deferred (WH-004).
 
-Choose native package formats after the GUI and filesystem permissions are tested. Do not promise a completely static binary. A sandboxed package must be tested with folder selection, mounted volumes, external opening, and Trash behavior—not just application launch.
+Choose Linux package formats after the GUI and filesystem permissions are tested. Do not promise a completely static binary. A sandboxed package must be tested with folder selection, mounted volumes, external opening, and Trash behavior—not just application launch.
 
 ### 18.2 Configuration
 
@@ -1189,13 +1200,13 @@ These are dependency-ordered milestones, not time estimates or a commitment to r
 
 | Phase | Deliverable | Exit condition |
 | --- | --- | --- |
-| MS-0 · Freeze the baseline | Record Fuzzy DeDupe, GPLv3, and independent implementation; resolve the remaining initial-format and OS scope. | New repository initialized with the selected license and consistent metadata; owner-confirmed boundaries recorded; excluded features remain excluded. |
+| MS-0 · Freeze the baseline | Record Fuzzy DeDupe, GPLv3, independent implementation, the plain-text-only V1 format scope, and the Linux-only V1 release. | New repository initialized with the selected license and consistent metadata; owner-confirmed boundaries recorded; excluded features remain excluded. |
 | MS-1 · Validate the UI shell | Implement §11: two compact workspaces, large table/paired panes, popup host, stable selection, and background progress. | Fixture-based visual comparison against current Figma, state-restoration tests, and native GUI/accessibility validation pass; GUI choice accepted. |
 | MS-2 · Build discovery and exact matching | File snapshots, bounded traversal, hashes, verification, basic persistence. | Exact fixtures and filesystem edge cases pass without live cleanup enabled. |
 | MS-3 · Evaluate text similarity | Normalization, candidate retrieval alternatives, scoring, labeled corpus. | Measured precision/recall and cost justify selected profiles and algorithms. |
 | MS-4 · Integrate review | Table-backed groups, paired evidence, original-text previews, popup settings, cache validity, cancellation. | End-to-end discovery-to-review works without hidden coverage assumptions; current scan profiles remain immutable. |
 | MS-5 · Enable controlled cleanup | Plan validation, Trash backend, journaling, failure injection, recovery. | Safety suite passes before exposing real deletion in a release build. |
-| MS-6 · Harden and package | Migration tests, performance baselines, dependency/license review, supported-platform testing, and corresponding-source packaging. | Documented release criteria are satisfied; binary/source versions match; required license and third-party notices are included. |
+| MS-6 · Harden and package | Migration tests, performance baselines, dependency/license review, Linux release testing, and corresponding-source packaging. | Documented release criteria are satisfied; binary/source versions match; required license and third-party notices are included. |
 | Later media phases | Add one analyzer and reviewer at a time. | Each passes its own accuracy/resource/packaging gate without weakening shared safety. |
 
 Do not select text algorithms solely because they are easy to implement, and do not implement all future formats before demonstrating that V1 solves the motivating text workflow.
@@ -1213,8 +1224,8 @@ An em dash means the source did not assign an owner, deadline, or blocking statu
 | ID | Question | Current Assumption | Blocking? | Owner | Needed By | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | OQ-001 | What is the project name? (Source decision 01.) | **Confirmed:** Fuzzy DeDupe. Apply the name to the application and project documentation. | No; answered. | — | Answered; application and documentation naming use this choice. | Answered |
-| OQ-002 | Does V1 include extracted document formats as well as plain text? (Source decision 02.) | Plain text first is the recommendation. PDF, DOCX, and ODT require explicit inclusion; the meaning of “text documents” remains unresolved. | — | — | Before including extracted document formats; no date specified. | Open |
-| OQ-003 | Which operating systems receive initial release support? (Source decision 03.) | Linux first is the recommendation. Maintain portability and decide release support explicitly. | — | — | Before initial release support is committed; no date specified. | Open |
+| OQ-002 | Does V1 include extracted document formats as well as plain text? (Source decision 02.) | **Confirmed:** V1 is plain text only. PDF, DOCX, ODT, and other extracted formats are excluded from V1 and deferred (C-013, WH-003). | No; answered. | — | Answered 2026-11-21. | Answered |
+| OQ-003 | Which operating systems receive initial release support? (Source decision 03.) | **Confirmed:** V1 is released for Linux only, developed so that macOS and Windows support can be added later (C-014, NFR-008, WH-004). | No; answered. | — | Answered 2026-11-21. | Answered |
 | OQ-004 | Does egui/eframe satisfy the approved compact UI in a native implementation? (Source decision 04.) | egui/eframe remains pending native implementation validation of the approved compact Figma layout. Visual approval does not validate the framework. | Yes, for accepting the GUI framework without its validation gate. | — | At native UI validation, before treating the framework as validated. | Open |
 | OQ-005 | Which fuzzy algorithms, indexes, parameters, defaults, and quality targets will be selected? (Source decision 05.) | Benchmark document resemblance and passage containment separately. Algorithms and their defaults remain choices to validate rather than settled conclusions. | — | — | Before freezing the matching design and its defaults; no date specified. | Open |
 | OQ-006 | Which tokenization and normalization profiles will be used? (Source decision 06.) | Conservative defaults, visible settings, and versioned artifacts are the recommended approach; final profiles remain open. | — | — | — | Open |
@@ -1251,7 +1262,7 @@ Source §18 recommends a **text-only V1 with read-only review**, centered on dis
 
 Design the shared infrastructure for multiple media types now, while implementing only the text analyzer. Later formats should extend decoding, fingerprints, indexes, metrics, and preview renderers without replacing the cleanup safety model. Incremental media expansion does not establish release dates or a universal similarity score.
 
-The source's specifically unresolved issues are the meaning of “text documents,” initial OS release coverage, GUI fit, algorithm parameters and quality targets, optional file-management breadth, and the Trash backend. **No throughput, recall, memory, or recovery guarantee has yet been demonstrated on an implementation.**
+The owner has since confirmed a plain-text-only V1 and a Linux-only V1 release with an architecture portable to macOS and Windows. The remaining unresolved issues are GUI fit, algorithm parameters and quality targets, optional file-management breadth, and the Trash backend. **No throughput, recall, memory, or recovery guarantee has yet been demonstrated on an implementation.**
 
 The retained product vision is to find identical files, discover substantially overlapping text, show what differs, and let the user clean up with clear evidence and controlled actions, without editing documents or relying on AI.
 
