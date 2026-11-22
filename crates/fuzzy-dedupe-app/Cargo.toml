@@ -8,14 +8,75 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# The library target exists so integration tests under tests/ can reach the
+# UI modules; the bin-only crate had no target they could link against.
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "fuzzy-dedupe"
 path = "src/main.rs"
 
+# Every third-party crate here needs its spec §8.3 row and its
+# .github/boundaries.toml [third-party] entry (plan §3.4, MS-0 C-7).
+#
+# The five egui-family crates move together: egui_table and egui_kittest each
+# require exactly one egui minor, so raising one pin means raising all five to
+# a set both of them support (plan D-001, T11 recovery rule).
+#
+# No [target.*] table may appear here: the boundaries check confines every
+# target-specific dependency to fuzzy-dedupe-platform. The wayland and x11
+# features are therefore enabled unconditionally; egui-winit and winit gate
+# them to Linux and BSD themselves.
 [dependencies]
 fuzzy-dedupe-domain = { path = "../fuzzy-dedupe-domain" }
 fuzzy-dedupe-engine = { path = "../fuzzy-dedupe-engine" }
 fuzzy-dedupe-platform = { path = "../fuzzy-dedupe-platform" }
+
+# eframe's default set minus four features (plan D-001, spec §8.5):
+#   default_fonts — egui's bundled fonts; the theme embeds IBM Plex and Noto
+#                   Emoji instead, and the epaint_default_fonts crate they
+#                   come from must stay out of the graph;
+#   system_fonts  — egui's own system-font lookup; fallback fonts come from
+#                   the platform adapter's fontconfig lookup instead;
+#   links         — egui-winit opening URLs itself; opening a web address goes
+#                   through the platform adapter;
+#   web_screen_reader — wasm-only.
+# persistence is not a default and stays off: preferences.toml is the only
+# persisted state (DR-009).
+#
+# Turning defaults off also drops eframe's `winit/default`, and only a direct
+# winit dependency, which has no §8.3 row, could restore it. Two consequences:
+# libwayland is still loaded at run time, not linked, only because
+# smithay-clipboard (from `clipboard`) enables wayland-backend/dlopen; and
+# Wayland windows get winit's fallback frame instead of the Adwaita
+# client-side decorations.
+eframe = { version = "=0.37.0", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+# Re-enabling `default_fonts` here, or anywhere in the graph, undoes the
+# eframe setting above; Cargo unifies features across the whole build.
+egui = { version = "=0.37.0", default-features = false }
+# SVG loading only: the icons are embedded bytes, so neither the default
+# file-path loader nor raster image decoding is needed.
+egui_extras = { version = "=0.37.0", default-features = false, features = [
+    "svg",
+] }
+egui_table = "=0.11.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.2.2"
+tracing = "=0.1.44"
+tracing-appender = "=0.2.5"
+tracing-subscriber = "=0.3.23"
+
+[dev-dependencies]
+# Headless interaction tests plus wgpu-rendered snapshot comparison (T22),
+# on the same renderer the application ships with (spec §8.3).
+egui_kittest = { version = "=0.37.0", features = ["snapshot", "wgpu"] }
 
 [lints]
 workspace = true

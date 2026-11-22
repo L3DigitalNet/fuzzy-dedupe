@@ -37,6 +37,22 @@
 # it. Empty at MS-0, which has no third-party crate. Entry form:
 #   serde = ["fuzzy-dedupe-domain", "fuzzy-dedupe-storage"]
 [third-party]
+# §8.3 row "eframe, egui" (MS-1).
+eframe = ["fuzzy-dedupe-app"]
+egui = ["fuzzy-dedupe-app"]
+# §8.3 row "egui_extras" (MS-1).
+egui_extras = ["fuzzy-dedupe-app"]
+# §8.3 row "egui_table" (MS-1).
+egui_table = ["fuzzy-dedupe-app"]
+# §8.3 row "egui_kittest" (MS-1, development only).
+egui_kittest = ["fuzzy-dedupe-app"]
+# §8.3 row "serde, toml" (MS-1).
+serde = ["fuzzy-dedupe-app"]
+toml = ["fuzzy-dedupe-app"]
+# §8.3 row "tracing, tracing-subscriber, tracing-appender" (MS-1).
+tracing = ["fuzzy-dedupe-app"]
+tracing-subscriber = ["fuzzy-dedupe-app"]
+tracing-appender = ["fuzzy-dedupe-app"]
 
 # R3: GUI crates, which only fuzzy-dedupe-app may declare. `*` entries are
 # shell-style globs over the package name.
