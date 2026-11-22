@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Semantic layer of the no-file-mutation guard (MS-1 plan D-006, Appendix A
+# C-09; spec §19 MS-1 exit item 8). The existing `clippy` job runs with
+# `-D warnings`, so every call or type use below fails CI. Clippy resolves
+# paths, so imported, aliased and re-exported uses are caught too.
+#
+# Allowed uses carry an item-level
+# `#[expect(clippy::disallowed_methods, reason = "…")]` or
+# `#[expect(clippy::disallowed_types, reason = "…")]`, and only at the C-09
+# allowlisted paths:
+#   crates/fuzzy-dedupe-platform/src/app_files.rs     write, create, open, rename
+#   crates/fuzzy-dedupe-platform/src/log_retention.rs std::fs::remove_file only
+#   crates/fuzzy-dedupe-platform/src/open.rs          std::process::Command only
+#   crates/*/tests/**                                 write and create only
+# `expect`, not `allow`: a stale allowance then fails as an unfulfilled
+# expectation instead of silently lingering.
+#
+# Added beyond the C-09 minimum (T3 executor discretion; round-2 review):
+# std::os::unix::fs::symlink, std::fs::DirBuilder::create,
+# std::fs::File::set_permissions, std::fs::File::set_len,
+# std::fs::File::set_times, std::fs::File::set_modified and
+# std::fs::File::options. The Windows std::os::windows::fs::symlink_file and
+# symlink_dir are deliberately absent: they do not resolve on the Linux host,
+# Clippy warns about an unresolvable entry and `-D warnings` would fail, so
+# the textual guard alone rejects them.
+#
+# Entries may be added but never removed (C-09). This must stay the only
+# Clippy configuration file in the repository: Clippy reads the nearest one
+# above each crate, so a crate-level file would silently replace this list.
+# The textual guard, crates/fuzzy-dedupe-app/tests/no_file_mutation.rs, keeps
+# its MIN_DISALLOWED_METHODS, EXTRA_DISALLOWED_METHODS and
+# MIN_DISALLOWED_TYPES in step with this file and fails if any of them is
+# missing here.
+
+disallowed-methods = [
+  { path = "std::fs::remove_file", reason = "MS-1 never deletes user files; only log_retention.rs may expire the app's own logs (C-09)" },
+  { path = "std::fs::remove_dir", reason = "MS-1 never deletes user files (C-09)" },
+  { path = "std::fs::remove_dir_all", reason = "MS-1 never deletes user files (C-09)" },
+  { path = "std::fs::rename", reason = "MS-1 never moves or renames user files; only the app-owned writer may (C-09)" },
+  { path = "std::fs::hard_link", reason = "MS-1 creates no links (C-09)" },
+  { path = "std::fs::soft_link", reason = "MS-1 creates no links (C-09)" },
+  { path = "std::fs::set_permissions", reason = "MS-1 never changes file permissions (C-09)" },
+  { path = "std::fs::write", reason = "writes go through the app-owned writer in app_files.rs (C-09)" },
+  { path = "std::fs::copy", reason = "MS-1 copies no files (C-09)" },
+  { path = "std::fs::create_dir", reason = "directories are created only by the app-owned writer (C-09)" },
+  { path = "std::fs::create_dir_all", reason = "directories are created only by the app-owned writer (C-09)" },
+  { path = "std::fs::File::create", reason = "files are created only by the app-owned writer (C-09)" },
+  { path = "std::fs::File::create_new", reason = "files are created only by the app-owned writer (C-09)" },
+  { path = "std::fs::OpenOptions::open", reason = "OpenOptions opens for writing; use File::open to read, or the app-owned writer (C-09)" },
+  { path = "std::os::unix::fs::symlink", reason = "MS-1 creates no links (C-09 addition)" },
+  { path = "std::fs::DirBuilder::create", reason = "directories are created only by the app-owned writer (C-09 addition)" },
+  { path = "std::fs::File::set_permissions", reason = "MS-1 never changes file permissions (C-09 addition)" },
+  { path = "std::fs::File::set_len", reason = "MS-1 never truncates or extends files (C-09 addition)" },
+  { path = "std::fs::File::set_times", reason = "MS-1 never changes file timestamps (C-09 addition)" },
+  { path = "std::fs::File::set_modified", reason = "MS-1 never changes file timestamps (C-09 addition)" },
+  { path = "std::fs::File::options", reason = "File::options builds an OpenOptions; use File::open to read, or the app-owned writer (C-09 addition)" },
+]
+
+disallowed-types = [
+  { path = "std::process::Command", reason = "the only process spawn is the opener in open.rs (C-09)" },
+]
