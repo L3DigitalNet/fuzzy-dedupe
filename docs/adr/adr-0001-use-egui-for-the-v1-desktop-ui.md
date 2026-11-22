@@ -120,7 +120,7 @@ A change falls within this ADR when it adds or modifies presentation-layer code 
 > - **Confirmation.** The third check now reads: the MS-1 evidence file records the measured results and the owner's sign-off of the MS-1 exit list. The results inform remediation within egui, not the framework choice.
 > - **More Information.** Revisit this decision only by explicit owner decision: for example, when egui remediation is exhausted against a target the owner keeps, when egui's release breakage blocks a needed upgrade, or if accessibility returns to scope.
 >
-> SPEC-FZDP v0.7 has since chosen `egui_table` and the wgpu renderer, two items this record left undecided. The specification governs them; this ADR does not.
+> SPEC-FZDP v0.7 has since chosen `egui_table` and the wgpu renderer, two items this record left undecided. Spec §8.5 also names the presentation crate `fuzzy-dedupe-app` and the orchestration crate `fuzzy-dedupe-engine`, replacing the `crates/app` and “core” names used above. The specification governs them; this ADR does not.
 
 ## Pros and Cons of the Options
 

@@ -4,15 +4,15 @@
 
 | ID | Convention |
 | --- | --- |
-| C1 | Refresh vendored `figma-*` skills from upstream `skills-figquery` verbatim; never reformat or hand-edit them. |
+| C1 | Install the `figma-*` skills locally from upstream `skills-figquery`, verbatim and untracked; never commit them, because upstream grants no license. |
 
 ## Numbered conventions
 
 Add stable project patterns with identifiers that are never renumbered.
 
-### C1: Vendored Figma skills stay byte-identical to upstream
+### C1: Figma skills are installed locally, never tracked
 
-- Source: `figma/mcp-server-guide` `skills-figquery/` (plugin 2.2.211, upstream `43a06ff`), copied to `.agents/skills/figma-*/`.
-- Use `skills-figquery`, not `skills/`: Figma's Claude and Cursor plugins both ship `skills-figquery`.
-- To refresh, replace the directories from a fresh upstream clone and confirm with `diff -rq`.
-- The markdown-tooling exclusion in `.standards/config.toml` keeps Prettier and markdownlint off these files.
+- Source: `figma/mcp-server-guide` `skills-figquery/` (plugin 2.2.211, upstream `43a06ff`), copied to `.agents/skills/figma-*/` for Codex.
+- Upstream declares no license, so the copies are gitignored and stay out of the public repository (untracked 2026-11-22, owner decision).
+- Install or refresh in each clone or worktree that needs them: copy the directories from a fresh upstream clone, verbatim, and confirm with `diff -rq`.
+- Use `skills-figquery`, not `skills/`: Figma's Claude and Cursor plugins both ship `skills-figquery`. Claude Code uses its Figma plugin instead.
