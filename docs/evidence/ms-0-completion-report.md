@@ -133,4 +133,6 @@ Source: `gh run list --repo L3DigitalNet/fuzzy-dedupe --commit 0b6dcbc64f1b842b9
 
 ## Admission result
 
-`gh-workflow admission --branch main` exited 0. It reported 12 commits since `e8b32886101d14fd7da344e2a7fc5862d04c1255`: 8 pull request, 4 handoff and 0 unadmitted.
+`gh-workflow admission --branch main` reads the local `main` ref. Run with local `main` at `b419d7d48bce4f34e10d5382f6bc9105fc22d629`, after the close-out PR, it exited 0 and reported 14 commits since `e8b32886101d14fd7da344e2a7fc5862d04c1255`: 10 pull request, 4 handoff and 0 unadmitted. That range includes this squash, `0b6dcbc`. The `admission` workflow run on `0b6dcbc` itself, 45066522706, also concluded `success`.
+
+Correction, 2026-11-22: this paragraph first quoted a run made while local `main` was still at `b0a75162182c408ee2897e8f27e90f8f85b51f62`. That run reported 12 commits (8 pull request, 4 handoff, 0 unadmitted), but its range ended before the squash, so it did not prove the squash was admitted.
