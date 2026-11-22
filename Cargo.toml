@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Virtual workspace root: every member inherits package metadata and lints
+# from here, so a crate manifest never restates license, edition,
+# rust-version or lint levels.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/fuzzy-dedupe-domain",
+    "crates/fuzzy-dedupe-engine",
+    "crates/fuzzy-dedupe-scanner",
+    "crates/fuzzy-dedupe-analyzers",
+    "crates/fuzzy-dedupe-storage",
+    "crates/fuzzy-dedupe-fileops",
+    "crates/fuzzy-dedupe-platform",
+    "crates/fuzzy-dedupe-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Matches the 1.96.0 channel pinned in rust-toolchain.toml; raise both together.
+rust-version = "1.96"
+license = "GPL-3.0-only"
+
+# Lint split (plan D-001): the workspace can only `deny` unsafe code, because
+# a workspace `forbid` could not be relaxed by the scoped
+# `#[allow(unsafe_code)]` that fuzzy-dedupe-platform needs, and Cargo rejects
+# any per-crate override beside `[lints] workspace = true`. Every other crate
+# root therefore adds `#![forbid(unsafe_code)]` itself; a new crate must too.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+# Pedantic sits at priority -1 so an individual lint listed here can override
+# it. Any selective allow belongs in this table with a reason comment, never
+# in a crate manifest.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

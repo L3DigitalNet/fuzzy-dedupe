@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+[package]
+name = "fuzzy-dedupe-fileops"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+fuzzy-dedupe-domain = { path = "../fuzzy-dedupe-domain" }
+fuzzy-dedupe-storage = { path = "../fuzzy-dedupe-storage" }
+
+[lints]
+workspace = true
