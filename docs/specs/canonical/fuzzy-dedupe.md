@@ -35,6 +35,7 @@ The owner has approved the product name, independent Rust implementation, licens
 | 0.5 | 2026-11-21 | Answered OQ-002 (plain-text-only V1) and OQ-003 (Linux-only V1, portable to macOS and Windows later); added C-013, C-014, WH-003, WH-004 and NFR-008. |
 | 0.6 | 2026-11-21 | Answered OQ-004: egui/eframe selected by ADR 0001, with Slint as the fallback. Added NG-003 (no assistive-technology support) and narrowed NFR-005 to keyboard operation and display scaling. |
 | 0.7 | 2026-11-22 | Recorded the owner decisions from the v0.6 gap review. egui is committed (C-015), with MS-1 targets in §11.9. Defined MS-0 and MS-1 exit lists, the eight-crate workspace, CI gates, and approved dependencies. Separated reference, protected, and kept states, and adopted connected clusters with the kept-counterpart rule (FR-025). Cleanup now stops and asks for re-confirmation on change, with no permanent deletion (FR-021, WH-007). Added scan-scoped review decisions (FR-026, DR-008), a dark theme (FR-027), local logs (NFR-009), pane selection (IR-006), and preferences (DR-009). Synced §11 with the revised Figma frames and gave every UI check and ERR ID a traceability row. |
+| 0.8 | 2026-11-22 | Recorded L3Digital LLC as copyright holder. Answered OQ-013 with a main menu at the bottom of the rail (F10) holding the theme override, zoom, Keyboard shortcuts, Open log folder, About and Quit. Added the Keyboard shortcuts and About popups and FR-028 (GPLv3 legal notices). Raised path and gutter text to 12 units, kept Queue for cleanup enabled with an inline prompt, and softened overlay shadows (`shadow` token). |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
@@ -239,7 +240,7 @@ Priority applies within that baseline. **Must** denotes a proposed release gate 
 | FR-016 | The system shall show the paths, sizes, timestamps, match type and score context of the files under review. | Similar names can refer to different targets. (REVIEW 02) | Users can identify the actual files targeted by an operation. | Should |
 | FR-017 | The system shall support keyboard group navigation and let the user mark files as Kept or Protected as separate states. | A review decision and a cleanup restriction have different scopes, and both must follow the chosen file. (REVIEW 03) | Kept and Protected states follow their files across sorting and filtering. No route can queue a protected file, and bulk actions skip kept files. | Must |
 | FR-018 | The system shall present Findings as a dominant compact grouped table keyed by stable row identities. | Actions must follow their targets as the view changes. (REVIEW 04) | Filtering, sorting, expansion, and returning from comparison preserve focus and queued intent. | Must |
-| FR-019 | The system shall open Matching rules, New scan, Review unique text, Queue identical copies and Review cleanup as modal popups over the current workspace, one at a time. | Supporting tasks need to preserve review context. (REVIEW 05) | Supporting tasks preserve the underlying workspace rather than requiring separate pages, and no popup opens over another. | Must |
+| FR-019 | The system shall open Matching rules, New scan, Review unique text, Queue identical copies, Review cleanup, Keyboard shortcuts and About as modal popups over the current workspace, one at a time. | Supporting tasks need to preserve review context. (REVIEW 05) | Supporting tasks preserve the underlying workspace rather than requiring separate pages, and no popup opens over another. | Must |
 | FR-020 | The system shall execute user-confirmed removal on the selected files and reflect the observed filesystem outcomes in Findings. | The cleanup workflow acts on actual copies. (CLEAN 01) | Filesystem outcomes and result-list changes agree. | Must |
 | FR-021 | The system shall remove files only by moving them to the system Trash and shall offer no permanent deletion in V1. | A Trash failure must not turn into data loss. (CLEAN 02) | Trash support is checked per target when the plan is built, and a target without it shows “Blocked: no Trash” before confirmation and stays in place. A Trash failure during the run stops cleanup and asks for re-confirmation. No code path deletes permanently. | Must |
 | FR-022 | The system shall preview the concrete plan and revalidate its targets and retained copies before executing it. | Paths, identities and evidence can change after review. (CLEAN 03) | Changed or ambiguous targets are blocked or returned for review before the run. A change to a queued file, its kept counterpart, or required review evidence found during the run stops cleanup before that file. The dialog then shows the revised plan for confirmation of the rest. | Must |
@@ -247,7 +248,8 @@ Priority applies within that baseline. **Must** denotes a proposed release gate 
 | FR-024 | The system shall record moved, failed, blocked, stopped and uncertain outcomes per operation item. | A batch summary must account for partial execution. (CLEAN 05) | A partially completed batch cannot be reported as fully successful. | Must |
 | FR-025 | The system shall never queue a group's reference and shall queue a file only while its counterpart stays unqueued. | Every removed file must leave in place the text it was measured against. | Reference rows have no queue control. Queuing a file whose counterpart is queued is refused with “Counterpart queued” until the file is reviewed against a member that stays. No group can be queued in full. | Must |
 | FR-026 | The system shall scope the cleanup queue and review decisions to the scan that produced them. | Decisions bound to old evidence must not silently apply to new results. | Starting a new scan clears the queue and every Kept, per-file Protect and unique-text acknowledgment decision; New scan states how many queued files will be cleared. Folder protection persists as part of the scan setup. | Must |
-| FR-027 | The system shall provide light and dark themes that follow the system theme, with a System, Light or Dark override. | Long review sessions happen under both desktop themes. | Changing the system theme or the override recolors every view without a restart, and the override is remembered. Text meets a 4.5:1 contrast ratio against its background in both themes. | Must |
+| FR-027 | The system shall provide light and dark themes that follow the system theme, with a System, Light or Dark override in the main menu. | Long review sessions happen under both desktop themes. | Changing the system theme or the override recolors every view without a restart, and the override is remembered. Text meets a 4.5:1 contrast ratio against its background in both themes. | Must |
+| FR-028 | The system shall show the GPLv3 Appropriate Legal Notices in an About popup opened from the main menu. | GPLv3 requires an interactive program to display its copyright notice, the absence of warranty, and how to view the license. | About shows the product name and version, a copyright line naming L3Digital LLC and the copyright years, the `GPL-3.0-only` license statement and no-warranty notice, and actions that open the license text, the third-party notices and the source location. | Must |
 
 ### 7.2 Non-Functional Requirements
 
@@ -261,7 +263,7 @@ Priority applies within that baseline. **Must** denotes a proposed release gate 
 | NFR-006 | Performance measurement | The system shall characterize cold and incremental scan cost on representative and pathological collections. | Results record hardware, storage, corpus distribution, settings, cache state, elapsed time, bytes read, CPU use, peak memory, cache growth, hit rate and candidate count. | Should |
 | NFR-007 | Visual hierarchy | The system shall allocate at least 80% of work-area height to the main review surface in each reference workspace. | In the 1600 × 960 reference client area, measure the grouped table in Findings and the paired region in Compare against their respective work areas. | Must |
 | NFR-008 | Portability | The system shall confine operating-system-specific behavior to the `fuzzy-dedupe-platform` adapter crate. | Path encoding, file identity, hardlink and reflink detection, Trash, file dialogs, system-font lookup, external opening and per-user configuration, state and data locations are reached only through its adapters. Platform-conditional compilation and OS-specific dependencies appear only in that crate, checked in CI, and the Linux adapters pass the release suite. | Must |
-| NFR-009 | Diagnostics | The system shall write local daily log files that record events and file paths but never document text. | Logs go to `$XDG_STATE_HOME/fuzzy-dedupe/logs` (path from the platform adapter), roll over daily, and are kept for 7 days. The default level is info and `RUST_LOG` overrides it. A fixture scan and comparison leave no document text in the logs, and an “Open log folder” command opens the folder. | Should |
+| NFR-009 | Diagnostics | The system shall write local daily log files that record events and file paths but never document text. | Logs go to `$XDG_STATE_HOME/fuzzy-dedupe/logs` (path from the platform adapter), roll over daily, and are kept for 7 days. The default level is info and `RUST_LOG` overrides it. A fixture scan and comparison leave no document text in the logs, and “Open log folder” in the main menu opens the folder. | Should |
 
 ### 7.3 Interface Requirements
 
@@ -773,6 +775,11 @@ A run that stops after a change or a failure ends the current authorization. Fil
 | Review cleanup — Trash unavailable / running / stopped / finished | `27:1678` / `27:1390` / `35:2416` / `27:1533` | `CleanupDialog` states. |
 | Popup · Review cleanup — dark | `37:2732` | Dark theme of the cleanup dialog. |
 | Menu · Toolbar actions / Sort / Only in B | `28:3738` / `36:2569` / `29:2207` | Findings Actions and Sort menus; Compare unique-lines menu. |
+| Menu · Main / Menu · Main — dark | `43:3715` / `43:3754` | Main menu from the rail: theme override, zoom, Keyboard shortcuts, Open log folder, About, Quit. |
+| 01f · Findings — main menu open | `44:3954` | The main menu anchored to the rail’s Menu entry. |
+| Popup · Keyboard shortcuts | `44:3681` | `ShortcutsDialog`: the keyboard map of §11.10. |
+| Popup · About Fuzzy DeDupe | `44:3858` | `AboutDialog`: product identity and GPLv3 legal notices (FR-028). |
+| Review unique text — acknowledgment needed | `44:4079` | Queue pressed without the acknowledgment. |
 | [Components · Compact desktop][UX09] | `13:538` | Shared compact controls, grouped rows, and queue indicators. |
 | [Comparison prototype entry][UX10] | Starting node `13:1304` | Direct entry for checking the large paired-pane interaction. |
 
@@ -783,11 +790,10 @@ The file key is `d5tA6ap1tH4cTDaJiwve89`. API node identifiers use colons; Figma
 - Findings, Compare, and the Matching rules, New scan, Review unique text and Review cleanup popups;
 - the before-first-scan, scanning and no-matches states;
 - cleanup running and finished;
-- both 1024 × 600 frames and the three dark frames.
+- both 1024 × 600 frames and the three dark frames;
+- the main menu open, Keyboard shortcuts, and About.
 
 The review runs at MS-1 and again whenever a review frame changes; update the inspection date above when it does. Second, `egui_kittest` snapshot tests guard against regressions on every pull request (§17.2).
-
-**Not yet drawn.** Three V1 controls have no Figma frame: the System/Light/Dark theme override (FR-027), the “Open log folder” command (NFR-009), and the keyboard shortcuts window (§11.10). Their placement is OQ-013.
 
 The earlier page, **Archive · Initial exploration** (`0:1`), and its group-card workbench, dedicated configuration screens, separate cleanup/outcome pages, and compact unified-diff example are historical material. They are **not** the current layout specification. Earlier downloadable design documents and research recommendations must not override this revision.
 
@@ -808,6 +814,7 @@ Use one application shell with **two persistent workspaces: Findings and Compare
 | Compare | Rail; Findings toolbar; Enter on a row | Show the focused row against its counterpart, or the last valid pair; remain disabled with an explanation when no pair exists. | Pair identity, original/normalized mode, split ratio, wrap, linked scroll, and change position. |
 | Review cleanup (N) | Toolbar of both workspaces | Open Review cleanup for the current queue. | Return to the invoking workspace; do not add another permanent screen. |
 | Settings gear | Toolbar of both workspaces | Open the Matching rules popup. | The draft is separate from saved rules and existing scan evidence. |
+| Menu | Rail, below the workspace entries; F10 | Open the main menu: Appearance (System, Light, Dark), Zoom (−, percentage, +), Keyboard shortcuts…, Open log folder, About Fuzzy DeDupe, and Quit. | Closing the menu returns focus to the Menu entry. |
 | Actions ▾ | Findings toolbar | Menu: Queue identical copies…, Expand all groups, Collapse all groups, Choose columns…. | — |
 | Sort ▾ | Findings toolbar | Menu: Match type (default), Group size, Total size, Newest change, Folder. | Sort is part of the return context. |
 
@@ -956,7 +963,9 @@ All application-owned popups share dialog behavior: an explicit title, a reachab
 | --- | --- | --- |
 | Matching rules | 420 × 421 | Match mode (Exact only, or Exact + fuzzy text) and minimum similarity in percent with − and + steps. Four Ignore options: whitespace differences, line-ending differences, letter case, and punctuation. The note “Changes apply to the next scan. Existing results keep their original matching rules.” Cancel / Save rules. |
 | New scan | 640 × 528; 640 × 778 with matching rules expanded | A folder list with a Protect files checkbox per folder, + Add folder, and inline folder problems, such as a missing folder or a nested folder that is scanned once. A file-types summary with Edit…. A collapsible Matching rules section that shows a one-line summary when collapsed. Notes that protected folders cannot be queued and that starting a scan replaces the current results and clears N queued files. Cancel / Start scan. Removing a folder here changes the scan setup, not source files. |
-| Review unique text | 600 × 422 | Target and counterpart identity, the number of lines that exist only in the target, and the consequence of moving it. The unique lines themselves. Open comparison, which closes the popup and opens Compare, and Copy unique lines. An acknowledgment checkbox and Cancel / Queue for cleanup; Queue stays disabled until the acknowledgment is checked. |
+| Review unique text | 600 × 422 | Target and counterpart identity, the number of lines that exist only in the target, and the consequence of moving it. The unique lines themselves. Open comparison, which closes the popup and opens Compare, and Copy unique lines. An acknowledgment checkbox and Cancel / Queue for cleanup. Queue for cleanup stays enabled. Pressed without the acknowledgment, it queues nothing, shows an inline prompt under the checkbox, and moves focus to the checkbox (`44:4079`). |
+| Keyboard shortcuts | 960 × 494 | The §11.10 keyboard map in three columns (Global; Findings; Compare and Popups), one key cap per chord, the note that no shortcut moves a file to Trash, and Close. |
+| About Fuzzy DeDupe | 480 × 387 | Product name and version, a one-line description, “Copyright © 2026 L3Digital LLC”, the `GPL-3.0-only` and no-warranty statements, View license, Third-party notices and Source code actions, and Close (FR-028). |
 | Queue identical copies | 560 × 384 | Scope choice, the rules it applies (§11.4), the resulting count and size, and Cancel / Queue N files. |
 | Review cleanup | 960 × 423 | A summary line and a table of File, Folder, Match, Kept copy, Size and Status. The stop rule. The destination, “system Trash”, with the logical size and “No permanent-delete fallback. Space is not reclaimed until Trash is emptied.” Cancel / “Move N files to Trash”. |
 
@@ -997,6 +1006,7 @@ The following colors are the `DD · Semantic` variables in the Figma file, which
 | `line` | `#DDE3EB` | `#2A313B` | Separators. |
 | `code` | `#FAFBFD` | `#14181D` | Quiet document and header backgrounds. |
 | `white` | `#FFFFFF` | `#0D1014` | Text on `primary` and `red` fills. |
+| `shadow` | `#101828` at 6% | `#000000` at 40% | The one overlay shadow (y 4, blur 16, no spread) on popups and menus. |
 | `diffA` / `diffASoft` / `diffAStrong` | `#5B3A9E` / `#F1EBFB` / `#D9C8F4` | `#B9A2F2` / `#261F3D` / `#43356E` | A-only marker and text, row tint, and inline change. |
 | `diffB` / `diffBSoft` / `diffBStrong` | `#8B5614` / `#FFF2DC` / `#F7D79A` | `#E3B05E` / `#33280F` / `#5A4312` | B-only marker and text, row tint, and inline change. |
 
@@ -1011,9 +1021,9 @@ The application follows the system theme, with a System, Light or Dark override 
 | Group/header emphasis | IBM Plex Sans SemiBold | 13 / 18            |
 | Supporting text       | IBM Plex Sans Regular  | 12 / 18            |
 | Document              | IBM Plex Mono Regular  | 14 / 22            |
-| Path/gutter detail    | IBM Plex Mono Regular  | 11 / 16            |
+| Path/gutter detail    | IBM Plex Mono Regular  | 12 / 16            |
 
-Use the `DD/Compact/*` style family for this revision, not the larger `DD/title` and archived page headings. Shared compact controls use a 5-unit radius, and spacing follows the `DD · Geometry` scale of 4, 6, 8, 12, 16, 24, 32 and 40 units. Routine rows remain rectangular; one shared shadow belongs to floating dialogs and menus, not to table sections. Keep selected, queued, protected, stale, and disabled states visually and behaviorally distinct. The disabled queue checkbox (`DD/Compact/Queue checkbox/disabled`) marks a row that cannot be queued.
+Use the `DD/Compact/*` style family for this revision, not the larger `DD/title` and archived page headings. Shared compact controls use a 5-unit radius, and spacing follows the `DD · Geometry` scale of 4, 6, 8, 12, 16, 24, 32 and 40 units. No text is smaller than 12 units. Routine rows remain rectangular; the single `shadow` token belongs to floating dialogs and menus, not to table sections, and every raised surface also keeps its 1-unit `line` border. Key caps in the shortcuts window use `DD/Compact/Key cap`. Keep selected, queued, protected, stale, and disabled states visually and behaviorally distinct. The disabled queue checkbox (`DD/Compact/Queue checkbox/disabled`) marks a row that cannot be queued.
 
 Preserve usable hit targets despite compact glyphs: the 16-unit checkbox is a visual mark inside an adequately sized cell target, not the entire clickable area. Icon buttons have a tooltip naming the action and its shortcut; important destructive controls retain text labels.
 
@@ -1032,7 +1042,7 @@ crates/fuzzy-dedupe-app/src/
   main.rs                    # Binary entry point for `fuzzy-dedupe`
   app.rs                     # UI root; bounded event ingestion
   ui/
-    shell.rs                 # Rail, toolbars, status, workspace switch
+    shell.rs                 # Rail and main menu, toolbars, status, workspace switch
     theme.rs                 # Light/dark palette, typography, density, zoom
     findings.rs              # Grouped table, filters, sorting, inspection focus
     compare.rs               # Pair routing, controls, text-renderer host
@@ -1047,6 +1057,8 @@ crates/fuzzy-dedupe-app/src/
       unique_text_review.rs
       queue_identical.rs
       cleanup.rs
+      keyboard_shortcuts.rs
+      about.rs
   presentation/
     state.rs                 # Workspace/dialog state and restoration
     commands.rs              # Typed requests to application services
@@ -1112,6 +1124,7 @@ The current approved comparison default stays **side by side**. Do not silently 
 | Global | Ctrl+, | Matching rules |
 | Global | Ctrl+Enter | Open Review cleanup |
 | Global | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in / zoom out / reset zoom |
+| Global | F10 | Main menu |
 | Global | Ctrl+Q | Quit |
 | Findings | Ctrl+F | Search; Esc clears it |
 | Findings | Arrow keys, Page Up/Down, Home/End | Move row focus |
@@ -1140,7 +1153,7 @@ The following are implementation acceptance requirements derived from the approv
 
 | ID | Acceptance condition |
 | --- | --- |
-| UI check 01 | Only Findings and Compare are permanent workspaces. New scan, Matching rules, Review unique text, Queue identical copies, and Review cleanup open as modal popups, one at a time, without losing workspace state. |
+| UI check 01 | Only Findings and Compare are permanent workspaces. New scan, Matching rules, Review unique text, Queue identical copies, Review cleanup, Keyboard shortcuts, and About open as modal popups, one at a time, without losing workspace state. |
 | UI check 02 | In the 1600 × 960 reference client area, the findings table and comparison region each occupy at least 80% of their respective work-area height; no competing card dashboard or persistent inspector is introduced. |
 | UI check 03 | Compact row/control sizing and `DD/Compact/*` typography match the review frames in light and dark themes while scaling with display settings and zoom. |
 | UI check 04 | Sorting, filtering, collapsing groups, and returning from comparison do not change queued membership or the identity of a targeted file. |
@@ -1330,6 +1343,7 @@ These are planned checks. Record execution evidence against the canonical ID whe
 | FR-025 | In a group where one row’s counterpart is another member, queue that counterpart and try every queue entry point on the dependent row. Verify the reference has no queue control, the dependent row shows “Counterpart queued”, and no plan contains every member of a group. | Not Started |
 | FR-026 | Queue files and record Kept, Protect and acknowledgment decisions, then start a new scan. Verify New scan states the queued count, the new scan starts with an empty queue and no review decisions, and folder protection persists. | Not Started |
 | FR-027 | Switch the system theme and each override value with both workspaces and a popup open. Verify every view recolors without a restart, the override survives a restart, and an automated contrast check of rendered text meets 4.5:1 in both themes. | Not Started |
+| FR-028 | Open About from the main menu. Check the version, the copyright line naming L3Digital LLC, the `GPL-3.0-only` and no-warranty statements, and that each notice action opens its target. | Not Started |
 | NFR-001 | Saturate progress delivery with a dense candidate set and a large diff. Record queue depths, peak memory, UI interaction and worker acknowledgment of cancellation. | Not Started |
 | NFR-002 | Split tuning and evaluation by source family. Score renamed copies, revisions, containment, reordering, boilerplate and unrelated pairs. Inspect retrieval and final-score reports independently. | Not Started |
 | NFR-003 | Inject path replacement, changed identity, missing mounts, permission errors and Trash rejection in temporary trees. Compare intended targets and actual mutations, and confirm that no permanent-delete call exists. | Not Started |
@@ -1481,7 +1495,7 @@ An em dash means the source did not assign an owner, deadline, or blocking statu
 | OQ-010 | What resource limits and performance targets will apply? (Source decision 10.) | Select limits and targets from representative measurements, not assumptions about workstation hardware. No measured guarantee is available. The MS-1 prototype targets (§11.9) are separate and do not answer this question. | — | — | After representative measurements, before committing measured limits or targets. | Open |
 | OQ-011 | In what order will future media formats be added? (Source decision 11.) | Add formats incrementally. No release dates or universal score contract are established. | Unspecified in source; future formats are outside the text-only V1. | — | When selecting later media increments; no date specified. | Open |
 | OQ-012 | What release notices and records remain after the implementation basis and license decisions? (Source decision 12.) | **Basis, license and holder answered:** a from-scratch Rust application under GPLv3, recorded as `GPL-3.0-only`, with L3Digital LLC as copyright holder and SPDX headers plus REUSE from the first source file (§18.3). Remaining: the dependency inventory and corresponding-source release records. | Yes, for distribution until the remaining release records are complete. | — | Before distribution. | Open |
-| OQ-013 | Where do the theme override, the “Open log folder” command and the shortcuts window appear? | A compact menu reachable from the toolbar, designed and drawn in Figma before the MS-1 design review. | No. | — | MS-1 design review. | Open |
+| OQ-013 | Where do the theme override, the “Open log folder” command and the shortcuts window appear? | **Answered:** in the main menu, opened from the Menu entry at the bottom of the rail or with F10 (§11.2). The Keyboard shortcuts and About popups are drawn (§11.1). | No; answered. | — | Answered 2026-11-22. | Answered |
 
 OQ-012 is open only for its remaining distribution work. It does not reopen the confirmed from-scratch implementation or license. dupeGuru is a product/workflow reference; the earlier clone/port proposal no longer defines the implementation. No permission to use later GPL versions is assumed.
 
@@ -1510,7 +1524,7 @@ Source §18 recommends a **text-only V1 with read-only review**, centered on dis
 
 Design the shared infrastructure for multiple media types now, while implementing only the text analyzer. Later formats should extend decoding, fingerprints, indexes, metrics, and preview renderers without replacing the cleanup safety model. Incremental media expansion does not establish release dates or a universal similarity score.
 
-The owner has since confirmed a plain-text-only V1 and a Linux-only V1 release with an architecture portable to macOS and Windows. The owner also committed to egui/eframe, excluded assistive-technology support, and settled the review and cleanup rules recorded in v0.7. The open questions are algorithms and defaults (OQ-005, OQ-006), the cluster size limit (OQ-007), optional file management (OQ-008), the Trash backend (OQ-009), resource limits and performance targets (OQ-010), future media order (OQ-011), remaining release records (OQ-012), and the placement of undrawn controls (OQ-013). **No throughput, recall, memory, or recovery guarantee has yet been demonstrated on an implementation.**
+The owner has since confirmed a plain-text-only V1 and a Linux-only V1 release with an architecture portable to macOS and Windows. The owner also committed to egui/eframe, excluded assistive-technology support, and settled the review and cleanup rules recorded in v0.7. The open questions are algorithms and defaults (OQ-005, OQ-006), the cluster size limit (OQ-007), optional file management (OQ-008), the Trash backend (OQ-009), resource limits and performance targets (OQ-010), future media order (OQ-011), and remaining release records (OQ-012). **No throughput, recall, memory, or recovery guarantee has yet been demonstrated on an implementation.**
 
 The retained product vision is to find identical files, discover substantially overlapping text, show what differs, and let the user clean up with clear evidence and controlled actions, without editing documents or relying on AI.
 
