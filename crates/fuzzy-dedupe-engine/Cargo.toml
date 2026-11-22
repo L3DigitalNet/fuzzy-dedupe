@@ -15,5 +15,15 @@ fuzzy-dedupe-scanner = { path = "../fuzzy-dedupe-scanner" }
 fuzzy-dedupe-analyzers = { path = "../fuzzy-dedupe-analyzers" }
 fuzzy-dedupe-fileops = { path = "../fuzzy-dedupe-fileops" }
 
+# Every third-party crate here needs its spec §8.3 row and its
+# .github/boundaries.toml [third-party] entry (plan §3.4, MS-0 C-7), and adding
+# one is a D-014 change: a minimal lock update and a reviewed lock diff.
+#
+# Bounded request and event queues of the C-02 facade (plan D-008).
+crossbeam-channel = "=0.5.17"
+# Line differences for Compare; first used by the comparison service (T6).
+# The default `text` feature is the line-diff API; it adds no crate.
+similar = "=3.2.1"
+
 [lints]
 workspace = true
