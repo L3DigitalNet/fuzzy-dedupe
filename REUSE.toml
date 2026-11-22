@@ -142,7 +142,54 @@ SPDX-License-Identifier = "GPL-3.0-only"
 
 # D-012 class (d): unmodified IBM Plex TTFs (THIRD-PARTY-NOTICES.md). The
 # holder is verbatim from LICENSES/OFL-1.1.txt; keep the two in agreement.
+# The glob is `IBMPlex*`, not `*.ttf`: the fonts directory also holds Noto
+# Emoji, whose holder differs, and a broader glob would misattribute it.
 [[annotations]]
-path = "crates/fuzzy-dedupe-app/assets/fonts/*.ttf"
+path = "crates/fuzzy-dedupe-app/assets/fonts/IBMPlex*.ttf"
 SPDX-FileCopyrightText = 'Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"'
 SPDX-License-Identifier = "OFL-1.1"
+
+# D-012 class (d): unmodified Noto Emoji 3.002 (THIRD-PARTY-NOTICES.md). The
+# holder is verbatim from the font's own copyright name record and its OFL.txt.
+[[annotations]]
+path = "crates/fuzzy-dedupe-app/assets/fonts/NotoEmoji-Regular.ttf"
+SPDX-FileCopyrightText = "Copyright 2013 Google LLC"
+SPDX-License-Identifier = "OFL-1.1"
+
+# D-012 class (d): unmodified Lucide 1.77.0 SVGs (THIRD-PARTY-NOTICES.md),
+# split by origin as Lucide's LICENSE splits them. Icons are listed by exact
+# path, not `*.svg`, so an icon added later fails `reuse lint` until its
+# origin is checked against that list. Holders are verbatim from Lucide's
+# LICENSE at the 1.77.0 tag.
+#
+# Lucide-original icons: ISC only.
+[[annotations]]
+path = [
+  "crates/fuzzy-dedupe-app/assets/icons/anchor.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/file-text.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/menu.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/settings.svg",
+]
+SPDX-FileCopyrightText = "Copyright (c) 2026 Lucide Icons and Contributors"
+SPDX-License-Identifier = "ISC"
+
+# Icons Lucide's LICENSE names as derived from Feather (some under their
+# pre-rename names: columns, more-horizontal, alert-triangle). These carry
+# Feather's MIT notice alongside Lucide's ISC.
+[[annotations]]
+path = [
+  "crates/fuzzy-dedupe-app/assets/icons/check.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/chevron-down.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/chevron-right.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/columns-2.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/ellipsis.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/lock.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/search.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/table-2.svg",
+  "crates/fuzzy-dedupe-app/assets/icons/triangle-exclamation-point.svg",
+]
+SPDX-FileCopyrightText = [
+  "Copyright (c) 2026 Lucide Icons and Contributors",
+  "Copyright (c) 2013-present Cole Bemis",
+]
+SPDX-License-Identifier = "ISC AND MIT"
