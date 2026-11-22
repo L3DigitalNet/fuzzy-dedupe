@@ -2,12 +2,12 @@
 schema_version: '1.1'
 id: 'adr-0001-fuzzy-dedupe-use-egui-for-the-v1-desktop-ui'
 title: 'ADR 0001: Use egui for the V1 desktop UI'
-description: 'Selects egui/eframe as the UI framework for the Fuzzy DeDupe V1 desktop application, with Slint as the fallback if the MS-1 prototype fails.'
+description: 'Selects egui/eframe as the UI framework for the Fuzzy DeDupe V1 desktop application. Amended 2026-11-22: egui is committed, and Slint is only an owner-decided last resort.'
 doc_type: 'adr'
 status: 'active'
 created: '2026-11-21'
-updated: '2026-11-21'
-reviewed: '2026-11-21'
+updated: '2026-11-22'
+reviewed: '2026-11-22'
 owner: 'L3DigitalNet'
 consumer: 'agent'
 tags:
@@ -44,6 +44,8 @@ project:
 # ADR 0001: Use egui for the V1 desktop UI
 
 MADR status: **accepted**.
+
+> **Amended 2026-11-22 (SPEC-FZDP v0.6 gap review, finding I-03).** The owner committed to egui/eframe. The MS-1 prototype no longer decides whether the choice is final, and Slint is no longer a designated fallback that a failed criterion would trigger. The choice of egui with eframe, its scope, and its consequences remain in force. See [Amendments](#amendments).
 
 ## Context and Problem Statement
 
@@ -109,6 +111,16 @@ A change falls within this ADR when it adds or modifies presentation-layer code 
 - the presentation crate uses egui and eframe at an exactly pinned version, recorded in the committed lockfile;
 - no non-UI component depends on egui or eframe, as checked through the dependency graph (`cargo tree`);
 - the MS-1 acceptance results are recorded for the criteria named in the Decision Outcome before the choice is treated as final.
+
+### Amendments
+
+> **Amended 2026-11-22 (SPEC-FZDP v0.6 gap review, finding I-03).** The owner said “We will make egui work” and asked that Slint be used only if absolutely necessary. This amendment restates three parts of the accepted record; the rest stays in force.
+>
+> - **Decision Outcome.** The sentence “The choice is final only once the MS-1 prototype passes” and the fallback paragraph after the criteria list no longer apply. The choice is committed. MS-1 still builds the prototype and measures it against SPEC-FZDP §11.9 (targets T1 to T4) and the MS-1 exit list in §19, which cover the four criteria listed. A missed target is fixed within egui, or the owner changes the design or the target. Slint would be adopted only by a superseding ADR, on explicit owner decision after egui remediation is exhausted. No measurement triggers a switch, and no Slint spike is planned.
+> - **Confirmation.** The third check now reads: the MS-1 evidence file records the measured results and the owner's sign-off of the MS-1 exit list. The results inform remediation within egui, not the framework choice.
+> - **More Information.** Revisit this decision only by explicit owner decision: for example, when egui remediation is exhausted against a target the owner keeps, when egui's release breakage blocks a needed upgrade, or if accessibility returns to scope.
+>
+> SPEC-FZDP v0.7 has since chosen `egui_table` and the wgpu renderer, two items this record left undecided. The specification governs them; this ADR does not.
 
 ## Pros and Cons of the Options
 

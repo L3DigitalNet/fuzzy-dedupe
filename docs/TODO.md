@@ -6,6 +6,6 @@
 
 ## Agent tasks
 
-- Revise the spec and ADR 0001 to v0.7 from the owner decision register (I-01 to I-30); sync §11 with the revised Figma mockups.
-- Confirm egui against the MS-1 prototype criteria in ADR 0001, falling back to Slint if the table or paired panes fail.
+- Author the MS-0 and MS-1 plans from spec v0.7 §19 only when the owner asks for them.
+- Draw the theme override, Open log folder, and shortcuts window in Figma before the MS-1 design review (OQ-013).
 - Benchmark matching approaches before treating the algorithm recommendations as settled.
