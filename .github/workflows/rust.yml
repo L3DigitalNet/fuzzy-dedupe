@@ -77,11 +77,10 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build
         run: cargo build --workspace --locked
-      # --no-tests=warn until the workspace has its first test (plan D-006):
-      # nextest otherwise exits 4 when it finds none. The first milestone to
-      # add a test removes the flag.
+      # No --no-tests=warn: a run that finds no tests exits 4 and fails the
+      # job, so losing the test suite cannot pass silently.
       - name: Run tests
-        run: cargo nextest run --workspace --locked --no-tests=warn
+        run: cargo nextest run --workspace --locked
       # nextest does not run documentation tests, so they run separately.
       - name: Run documentation tests
         run: cargo test --doc --workspace --locked
