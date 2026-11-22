@@ -7,7 +7,7 @@ doc_type: 'adr'
 status: 'active'
 created: '2026-11-21'
 updated: '2026-11-22'
-reviewed: '2026-11-21'
+reviewed: '2026-11-22'
 owner: 'L3DigitalNet'
 consumer: 'agent'
 tags:
