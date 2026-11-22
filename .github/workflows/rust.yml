@@ -1,0 +1,156 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Rust gates of spec §17.2 (plan Appendix A C-3). The job IDs are a contract:
+# required checks and later milestones refer to them, so renaming one is a
+# contract change, not a cleanup.
+#
+# Supply chain (plan D-004): the only action is actions/checkout, pinned to
+# the commit admission.yml uses. The toolchain comes from rust-toolchain.toml
+# through the runner's preinstalled rustup. Rejected: dtolnay/rust-toolchain,
+# taiki-e/install-action and cache actions, which are third-party
+# dependencies the owner has not agreed to. nextest, cargo-deny and
+# cargo-audit are the exact release assets that .rexec.toml pins, verified
+# against the same SHA-256 digests. Bump a tool in .rexec.toml and here in the
+# same change, or CI and the rexec worker run different gate versions.
+
+name: Rust
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull-request runs are cancelled; a `main` run always completes,
+  # because it is the record that the landed commit passed.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Installs the channel and components that rust-toolchain.toml pins, as
+      # its own step so download time and failures are not attributed to
+      # the gate.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Asset and digest equal the .rexec.toml `github:nextest-rs/nextest`
+      # pin. `sha256sum -c` exits nonzero on a mismatch, which fails the step
+      # before the archive is unpacked.
+      - name: Install cargo-nextest
+        run: |
+          asset=cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$asset" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/$asset"
+          echo "d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a  $RUNNER_TEMP/$asset" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" cargo-nextest
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: cargo build --workspace --locked
+      # --no-tests=warn until the workspace has its first test (plan D-006):
+      # nextest otherwise exits 4 when it finds none. The first milestone to
+      # add a test removes the flag.
+      - name: Run tests
+        run: cargo nextest run --workspace --locked --no-tests=warn
+      # nextest does not run documentation tests, so they run separately.
+      - name: Run documentation tests
+        run: cargo test --doc --workspace --locked
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Asset and digest equal the .rexec.toml `github:EmbarkStudios/cargo-deny`
+      # pin.
+      - name: Install cargo-deny
+        run: |
+          asset=cargo-deny-0.22.0-x86_64-unknown-linux-musl.tar.gz
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$asset" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.22.0/$asset"
+          echo "98c56e6a408bfa5c3c60744b6015aaa6aa08f743fdeb88386d06fca035bb1786  $RUNNER_TEMP/$asset" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" --strip-components=1 \
+            cargo-deny-0.22.0-x86_64-unknown-linux-musl/cargo-deny
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # `--locked` is a cargo-deny global option, so it precedes `check`.
+      - name: Check dependency policy
+        run: cargo deny --locked check
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Asset and digest equal the .rexec.toml `github:rustsec/rustsec` pin.
+      - name: Install cargo-audit
+        run: |
+          asset=cargo-audit-x86_64-unknown-linux-gnu-v0.23.0.tgz
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$asset" \
+            "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.23.0/$asset"
+          echo "b77993532b253fcbf550996d7716465ec3d734d4e74e7f87bfb65a19add0fb59  $RUNNER_TEMP/$asset" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" --strip-components=1 \
+            cargo-audit-x86_64-unknown-linux-gnu-v0.23.0/cargo-audit
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # cargo-audit reads Cargo.lock as committed and has no `--locked` flag.
+      - name: Audit dependencies
+        run: cargo audit
+
+  portability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Runs after the toolchain install so the targets attach to the pinned
+      # channel, not the runner's default one. The targets are deliberately
+      # absent from rust-toolchain.toml (plan D-005), which would add two
+      # standard-library downloads to every workstation and worker install.
+      - name: Add the portability targets
+        run: rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
+      - name: Check for Windows
+        run: cargo check --locked -p fuzzy-dedupe-domain -p fuzzy-dedupe-platform --target x86_64-pc-windows-msvc
+      - name: Check for macOS
+        run: cargo check --locked -p fuzzy-dedupe-domain -p fuzzy-dedupe-platform --target aarch64-apple-darwin
+
+  boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Reads .github/boundaries.toml by default (plan D-011, Appendix A C-7);
+      # this is the same invocation as the local proof.
+      - name: Check crate boundaries
+        run: python3 .github/scripts/check-boundaries.py

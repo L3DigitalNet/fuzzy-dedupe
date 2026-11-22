@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+# cargo-deny 0.22 policy for licenses, advisories, bans and sources (spec
+# §17.2, plan D-007 and Appendix A C-6). The `deny` job in
+# .github/workflows/rust.yml runs it as `cargo deny --locked check`.
+#
+# This file enforces policy; it does not approve dependencies. A new direct
+# dependency also needs its spec §8.3 row and its .github/boundaries.toml
+# entry in the same pull request.
+
+[licenses]
+# Exactly the ten third-party licenses spec §17.2 allows. OFL-1.1 is absent
+# on purpose: §17.2 allows it only for font assets, MS-0 has no font crate,
+# and the font files are governed by REUSE.toml instead. Adding it here would
+# admit OFL-licensed code crates too.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "BSL-1.0",
+    "CC0-1.0",
+]
+
+# cargo-deny checks workspace members' own licenses too, so each of the eight
+# crates needs GPL-3.0-only granted by name. Rejected: GPL-3.0-only in
+# `allow`, which would silently admit GPL third-party crates, and
+# `private = { ignore = true }`, which only skips crates marked
+# `publish = false` and so would take a publishing decision the spec does not
+# make. Keep this list equal to the members in the root Cargo.toml; a crate
+# missing here fails the licenses check.
+exceptions = [
+    { crate = "fuzzy-dedupe-domain", allow = ["GPL-3.0-only"] },
+    { crate = "fuzzy-dedupe-engine", allow = ["GPL-3.0-only"] },
+    { crate = "fuzzy-dedupe-scanner", allow = ["GPL-3.0-only"] },
+    { crate = "fuzzy-dedupe-analyzers", allow = ["GPL-3.0-only"] },
+    { crate = "fuzzy-dedupe-storage", allow = ["GPL-3.0-only"] },
+    { crate = "fuzzy-dedupe-fileops", allow = ["GPL-3.0-only"] },
+    { crate = "fuzzy-dedupe-platform", allow = ["GPL-3.0-only"] },
+    { crate = "fuzzy-dedupe-app", allow = ["GPL-3.0-only"] },
+]
+
+# [advisories] and [bans] keep the cargo-deny 0.22 defaults. In particular,
+# `[bans] wildcards` is left unset, which in 0.22.0's code means `allow`
+# (its documentation says `warn`). The internal edges are versionless `path`
+# dependencies, which cargo-deny counts as wildcards, and
+# `allow-wildcard-paths` exempts them only in crates marked
+# `publish = false`, which these crates are not. With `wildcards = "deny"`,
+# even with `allow-wildcard-paths = true`, every crate with an internal edge
+# fails the bans check.
+
+[sources]
+# crates.io only: a crate from any other registry or from any git repository
+# fails the sources check.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
