@@ -116,6 +116,11 @@ SPDX-License-Identifier = "GPL-3.0-only AND Apache-2.0"
 # content.
 [[annotations]]
 path = [
+  # Agent-harness configuration, not build or CI, so annotated rather than
+  # headed (same reasoning as .codex/config.toml). The glob matches only the
+  # four project subagent definitions.
+  ".agents/command-guard-allow.txt",
+  ".claude/agents/*.md",
   ".claude/settings.json",
   ".gitignore",
   ".standards/config.toml",

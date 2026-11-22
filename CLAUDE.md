@@ -43,3 +43,25 @@ Run the enabled checks before claiming completion.
 <!-- END project-standards:markdown-tooling -->
 
 <!-- prettier-ignore-end -->
+
+<!-- markdownlint-disable MD025 -->
+
+# Project subagents
+
+This repository defines four project-level subagents in `.claude/agents/`. Each copies a global roster role (model pin, rules, command-guard hook and body) and adds tools that role lacks. When you orchestrate work here, for example with orchestrator-dispatch, send the legs below to the project role instead of its global source:
+
+| Project role | Derived from | Added tools | Use for |
+| --- | --- | --- | --- |
+| `rust-engineer` | `engineer` | `LSP` (rust-analyzer) | Rust legs that need diagnosis, design or invariant reasoning |
+| `rust-implementer` | `implementer` | `LSP` | Settled, mechanical Rust edits: renames, signature updates, pattern migrations |
+| `ui-engineer` | `engineer` | `LSP`, read-only Figma tools, the `figma-design-to-code` skill | egui and UI legs that need detail from a Figma frame |
+| `rust-verifier` | `verifier` | `LSP`, read-only Figma tools, the `figma-design-to-code` skill | Refuting Rust and UI claims, including design-review comparisons |
+
+Every other leg keeps its global role: plans and specs (`architect`), gates (`gate-runner`), handoff (`closeout`), prose (`docs`), research (`researcher`, `scout`), and security (`security`).
+
+- When a global source role changes in agent-configs, update its project copy in the same change.
+- rust-analyzer runs on the workstation, not through rexec. Builds, tests and Clippy still go through rexec, which stays the authoritative check.
+- Figma screenshot URLs are short-lived. Treat them as secrets, and never commit them.
+- `.agents/command-guard-allow.txt` holds the standing read-only Bash grants for `verifier` and `rust-verifier`.
+
+<!-- markdownlint-enable MD025 -->

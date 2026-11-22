@@ -1,0 +1,6 @@
+# Standing read-only Bash grants for guarded agents (verifier, rust-verifier) in fuzzy-dedupe.
+# One exact command per line. Each is read-only: the boundary script only reads
+# `cargo metadata --no-deps` output and `git ls-files`; cargo metadata only reads manifests and the lockfile.
+python3 .github/scripts/check-boundaries.py
+cargo metadata --no-deps --format-version 1
+cargo metadata --format-version 1 --locked
