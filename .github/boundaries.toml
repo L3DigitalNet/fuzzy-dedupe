@@ -53,6 +53,10 @@ toml = ["fuzzy-dedupe-app"]
 tracing = ["fuzzy-dedupe-app"]
 tracing-subscriber = ["fuzzy-dedupe-app"]
 tracing-appender = ["fuzzy-dedupe-app"]
+# §8.3 row "crossbeam-channel" (MS-1).
+crossbeam-channel = ["fuzzy-dedupe-engine"]
+# §8.3 row "similar" (MS-1).
+similar = ["fuzzy-dedupe-engine"]
 
 # R3: GUI crates, which only fuzzy-dedupe-app may declare. `*` entries are
 # shell-style globs over the package name.
