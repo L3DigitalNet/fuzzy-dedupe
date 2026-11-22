@@ -17,6 +17,5 @@ jobs:
       globs: "**/*.md\n**/*.json\n**/*.jsonc\n**/*.yml\n**/*.yaml"
       exclusions: |-
         .agents/skills/agent-handoff/**
-        .agents/skills/figma-*/**
         .claude/skills/agent-handoff/**
         docs/specs/fuzzy_dedupe_spec.md

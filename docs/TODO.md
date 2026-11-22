@@ -6,5 +6,6 @@
 
 ## Agent tasks
 
-- Author the MS-0 and MS-1 plans from spec v0.8 §19 only when the owner asks for them.
+- Execute the MS-0 plan when the owner asks, then the MS-1 plan after MS-0 closes.
+- Ask the owner to settle MS-1 PQ-008 (how invalidated Kept/Protect show) before MS-1 T13 lands; the plan default applies otherwise.
 - Benchmark matching approaches before treating the algorithm recommendations as settled.

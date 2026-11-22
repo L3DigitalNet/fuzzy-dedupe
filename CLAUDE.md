@@ -15,12 +15,11 @@ Declared exclusions:
 - `docs/specs/fuzzy_dedupe_spec.md` (both): Preserve the existing house-format product and architecture draft until it is independently revised.
 - `.agents/skills/agent-handoff/**` (both): The Agent Handoff package locks these skill files.
 - `.claude/skills/agent-handoff/**` (both): The Agent Handoff package locks these skill files.
-- `.agents/skills/figma-*/**` (both): Vendored verbatim from figma/mcp-server-guide skills-figquery; refresh from upstream instead of reformatting.
 
 Check formatting over exactly that scope, with Git as the corpus authority:
 
 ```bash
-git ls-files -s -z -- ':(glob)**/*.md' ':(glob)**/*.json' ':(glob)**/*.jsonc' ':(glob)**/*.yml' ':(glob)**/*.yaml' ':(glob,exclude).agents/skills/agent-handoff/**' ':(glob,exclude).agents/skills/figma-*/**' ':(glob,exclude).claude/skills/agent-handoff/**' ':(glob,exclude)docs/specs/fuzzy_dedupe_spec.md' | sed -zn '/^120000 /!s/^[^\t]*\t//p' | xargs -0 -r npx prettier --check --
+git ls-files -s -z -- ':(glob)**/*.md' ':(glob)**/*.json' ':(glob)**/*.jsonc' ':(glob)**/*.yml' ':(glob)**/*.yaml' ':(glob,exclude).agents/skills/agent-handoff/**' ':(glob,exclude).claude/skills/agent-handoff/**' ':(glob,exclude)docs/specs/fuzzy_dedupe_spec.md' | sed -zn '/^120000 /!s/^[^\t]*\t//p' | xargs -0 -r npx prettier --check --
 ```
 
 Without Git, bound the same scope by glob instead. Prettier's CLI has no negative pattern, so this form does not apply the declared format exclusions above; pass them through an `--ignore-path` file inside the repository:
@@ -34,7 +33,7 @@ Never check or write with a bare `.`: it reaches undeclared languages and Git-ex
 Lint Markdown structure over the same Git-tracked scope:
 
 ```bash
-git ls-files -z -- ':(glob)**/*.md' ':(glob,exclude).pytest_cache/**' ':(glob,exclude).ruff_cache/**' ':(glob,exclude).venv/**' ':(glob,exclude)node_modules/**' ':(glob,exclude).agents/skills/agent-handoff/**' ':(glob,exclude).agents/skills/figma-*/**' ':(glob,exclude).claude/skills/agent-handoff/**' ':(glob,exclude)docs/specs/fuzzy_dedupe_spec.md' | sed -z 's|^|:|' | xargs -0 -r npx markdownlint-cli2 --no-globs
+git ls-files -z -- ':(glob)**/*.md' ':(glob,exclude).pytest_cache/**' ':(glob,exclude).ruff_cache/**' ':(glob,exclude).venv/**' ':(glob,exclude)node_modules/**' ':(glob,exclude).agents/skills/agent-handoff/**' ':(glob,exclude).claude/skills/agent-handoff/**' ':(glob,exclude)docs/specs/fuzzy_dedupe_spec.md' | sed -z 's|^|:|' | xargs -0 -r npx markdownlint-cli2 --no-globs
 ```
 
 Never lint a bare recursive glob: it descends into any independent Git repository checked out below this one.

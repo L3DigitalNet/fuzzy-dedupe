@@ -33,11 +33,6 @@ glob = ".claude/skills/agent-handoff/**"
 applies_to = "both"
 reason = "The Agent Handoff package locks these skill files."
 
-[[standards.markdown-tooling.config.exclusions]]
-glob = ".agents/skills/figma-*/**"
-applies_to = "both"
-reason = "Vendored verbatim from figma/mcp-server-guide skills-figquery; refresh from upstream instead of reformatting."
-
 [standards.project-spec]
 enabled = true
 version = "1.11"

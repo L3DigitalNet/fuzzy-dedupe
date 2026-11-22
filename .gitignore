@@ -25,3 +25,9 @@ rustc-ice-*.txt
 
 # Claude Code subagents' local memory (machine-specific notes, not project knowledge)
 .claude/agent-memory/
+
+# Plan-authoring and execute-plan working state (drafts, generated checklists, logs)
+.project-pipeline/
+
+# Figma agent skills: no upstream license, so they are installed locally and never tracked (convention C1)
+.agents/skills/figma-*/
