@@ -8,7 +8,7 @@
 - Approved UI direction uses Findings and Compare workspaces with supporting popups; the draft reports no completed executable or validated safety/performance results.
 - egui/eframe is the committed UI framework ([ADR 0001](adr/adr-0001-use-egui-for-the-v1-desktop-ui.md), amended 2026-11-22); Slint only by explicit owner decision.
 - Assistive-technology support is a non-goal (NG-003). Storage, matching algorithms, and Linux package formats remain open.
-- Spec v0.7 defines MS-0 (scaffold eight crates) and MS-1 (UI on fixtures, targets T1–T4) exit lists, synced with the Figma frames.
+- Spec v0.8 defines MS-0 (scaffold eight crates) and MS-1 (UI on fixtures, targets T1–T4) exit lists; §11 matches every Figma frame, OQ-013 included.
 - Catalog 5 is configured with seven packages under Project Standards 5.29.0.
 - Codex has project-scoped Figma and Context7 MCP servers in `.codex/config.toml` and 17 vendored `figma-*` skills; see C1 in [conventions](handoff/conventions.md).
 - Rust 1.96.0 is pinned in `rust-toolchain.toml`; `.rexec.toml` pins nextest, deny, and audit binaries. No Cargo workspace exists yet.
