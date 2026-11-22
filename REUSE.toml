@@ -140,6 +140,16 @@ path = [
 SPDX-FileCopyrightText = "2026 L3Digital LLC"
 SPDX-License-Identifier = "GPL-3.0-only"
 
+# D-012 class (a): the §11.1 design-review PNG exports, project-owned as the
+# spec declares. Kept apart from the `.md` block above so that block's
+# every-glob-ends-in-`.md` guarantee still holds. The glob ends in `.png` and
+# is confined to one directory, so it cannot reach a protected source path or
+# clippy.toml; the directory's README.md carries its own inline header.
+[[annotations]]
+path = "docs/design/reference/*.png"
+SPDX-FileCopyrightText = "2026 L3Digital LLC"
+SPDX-License-Identifier = "GPL-3.0-only"
+
 # D-012 class (d): unmodified IBM Plex TTFs (THIRD-PARTY-NOTICES.md). The
 # holder is verbatim from LICENSES/OFL-1.1.txt; keep the two in agreement.
 # The glob is `IBMPlex*`, not `*.ttf`: the fonts directory also holds Noto
