@@ -255,6 +255,7 @@ Widgets never call the engine, the platform or the filesystem while drawing. Eve
 | NFR-009 | A fixture scan and comparison leave no document text in the log files. | `spec:docs/specs/canonical/fuzzy-dedupe.md#72-non-functional-requirements` | Should | T22 | T22 | PV-T22-006 |
 | REQ-045 | MS-1 is complete only after T27's owner-signed evidence file has squash-landed with green `main` runs and a close-out PR has landed with green `main` runs recording those runs, the Appendix B.3 completion report, the §17.3 statuses of the MS-1-verified IDs and a `DEV-` row for each deviation, after which a post-landing handoff record on `main` records the close-out PR's own identifiers and runs (§19; Appendix B.1, B.3, B.4). | `spec:docs/specs/canonical/fuzzy-dedupe.md#appendix-b-agent-implementation-contract` | Must | T28 | T28 | PV-T28-001 |
 | REQ-046 | Every durable record the evidence file cites validates the signed application: its C-14 binding equals the signed tree, or EV-007 records a rerun on the signed tree or an equivalence review that names the diff and shows it non-functional (D-016). | `spec:docs/specs/canonical/fuzzy-dedupe.md#19-implementation-plan` | Must | T27 | T27 | PV-T27-002 |
+| REQ-047 | The owner-approved §8.3 table holds a `winit` row (MS-1, `fuzzy-dedupe-app` only, used only to enable window-decoration features, exact version eframe =0.37.0 resolves, license) before the app declares it, and the app enables winit's Adwaita client-side title bar on GNOME Wayland without enabling egui's default fonts (§11.3 native title bar; D-001). | `spec:docs/specs/canonical/fuzzy-dedupe.md#approved-dependencies` | Must | T29 | T29 | PV-T29-001 |
 
 ## 7. Verification and Evidence Strategy
 
@@ -298,6 +299,7 @@ Widgets never call the engine, the platform or the filesystem while drawing. Eve
 | T26 | Run the manual GNOME and KDE Plasma pass | active | verification | P4 | T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T21, T22, T23 | REQ-006, REQ-018 | PV-T26-001 | yes / none |
 | T27 | Assemble the evidence file and obtain owner sign-off | active | verification | P5 | T1, T3, T21, T22, T24, T25, T26 | REQ-009, REQ-046 | PV-T27-001 | no / none |
 | T28 | Prove MS-1 on `main` and land the close-out record | active | operational | P5 | T27 | REQ-045 | PV-T28-001 | no / T1 spec file |
+| T29 | Approve and declare `winit` for the Adwaita title bar | active | configuration | P0 | T11 | REQ-047 | PV-T29-001 | yes / D-014 with T4, T6, T10, T11, T21, T22; T1 and T28 spec file |
 
 ## 9. Implementation Tasks
 
@@ -431,6 +433,40 @@ Widgets never call the engine, the platform or the filesystem while drawing. Eve
   - **T3.4 Verify GREEN** — rerun the targeted tests, the full nextest gate and the Clippy gate.
   - **T3.5 PROVE REJECTION** — apply each PV-T3-002 Clippy canary as a temporary change, confirm the Clippy gate fails naming `disallowed_methods` or `disallowed_types` (or `unfulfilled_lint_expectations`), revert it, and rerun the clean gate.
   - **T3.6 Verify Task** — run PV-T3-001 and PV-T3-002 and the repository gates; commit with the required `Plan-*` trailers.
+
+#### T29: Approve and declare `winit` for the Adwaita title bar
+
+- **disposition:** active
+- **outcome:** the §8.3 approved-dependency table holds an owner-approved `winit` row (MS-1, declared by `fuzzy-dedupe-app` only, used only to enable window-decoration features, version pinned to the exact winit version eframe =0.37.0 resolves, and its license) with a revision-history entry; `crates/fuzzy-dedupe-app/Cargo.toml` declares `winit` at that exact version with `default-features = false` and only the feature that restores winit's Adwaita client-side title bar on GNOME Wayland; `Cargo.lock` changes by a minimal delta and `.github/boundaries.toml` gains winit's C-7 entry for `fuzzy-dedupe-app`, merged through a PR the owner approved
+- **work_type:** configuration
+- **checkpoint:** one green configuration commit with the required `Plan-*` checkpoint trailers, landed by squash after the owner approves the PR
+- **boundary:** cross-task
+- **depends_on:** [T11]
+- **dependency_reason:** T11 owns the app manifest crates/fuzzy-dedupe-app/Cargo.toml, which declares eframe =0.37.0 with `default-features = false`, and is the preceding D-014 change whose Cargo.lock resolution fixes the winit version this task pins
+- **requirements:** [REQ-047]
+- **proof:** [PV-T29-001]
+- **source_refs:** [request, spec:docs/specs/canonical/fuzzy-dedupe.md#approved-dependencies, spec:docs/specs/canonical/fuzzy-dedupe.md#113-layout-measurements-and-visual-hierarchy, spec:docs/specs/canonical/fuzzy-dedupe.md#172-test-strategy]
+- **consumes:** [app manifest, Cargo.lock, MS-0 C-7 boundary policy, §8.3 table as T1 left it]
+- **produces:** [docs/specs/canonical/fuzzy-dedupe.md winit row, app manifest winit declaration, winit C-7 entry]
+- **preserves:** [every other §8.3 row and spec ID unchanged; eframe's declaration and features as T11 left them; `deny.toml`, `.github/scripts/check-boundaries.py`, the `[gui]` and OS crate lists and the C-09 allowlist unchanged; every crate root keeps `#![forbid(unsafe_code)]`]
+- **invariants:** [discovered from T11: eframe =0.37.0 runs with `default-features = false` because its defaults bundle egui's default fonts, which D-001 forbids and `cargo deny` rejects, and that also drops `winit/default`, so on GNOME Wayland, which has no server-side decorations, winit draws its plain fallback frame instead of the Adwaita title bar §11.3 asks for; only a direct `winit` dependency of `fuzzy-dedupe-app` can enable winit's `wayland-csd-adwaita` feature, and the owner approved adding it on 2026-11-22; the winit pin equals the version eframe =0.37.0 resolves, so the lock gains no second winit; `default-features = false`, and the declared features are only `wayland-csd-adwaita` or the equivalent title-drawing feature at that winit version, never `wayland-csd-adwaita-notitle`, which omits the "Fuzzy DeDupe" title, and nothing that re-enables `epaint_default_fonts` or another feature D-001 forbids; no app source references winit; the PR description records the finding and the owner's approval is recorded on the PR before landing]
+- **executor_discretion:** [§8.3 row and revision-history wording, C-7 entry placement, the lock-resolution command within D-014]
+- **files:** [`docs/specs/canonical/fuzzy-dedupe.md` (modify §8.3 table and revision history only; owner T1), `crates/fuzzy-dedupe-app/Cargo.toml` (modify; owner T11), `Cargo.lock` (modify minimal lock delta only, D-014; owner T4), `.github/boundaries.toml` (modify own third-party entries only, C-7; owner T4)]
+- **parallel_safe:** yes
+- **conflicts_with:** [T1, T4, T6, T10, T11, T21, T22, T28]
+- **supersedes:** []
+- **superseded_by:** []
+- **discovered_from:** [T11]
+- **evidence:** [ephemeral]
+- **recovery:** revert to the last green checkpoint; if the owner withdraws the approval, close the PR unmerged, leave the spec, manifest, lock and boundaries unchanged, and record in the PR that GNOME keeps winit's fallback frame; if the newly enabled closure fails `cargo deny` or `cargo audit`, stop and report to the owner without editing `deny.toml`
+- **acceptance:** PV-T29-001 proves the merged §8.3 table holds the `winit` row with version and license; the resolved graph (`cargo tree -e features -p fuzzy-dedupe-app -i winit --locked`) enables winit's `wayland-csd-adwaita`, or the equivalent feature at that winit version, for the app and contains no `epaint_default_fonts`; the reviewed lock diff adds only winit's newly enabled transitive closure and changes no existing version; `cargo deny --locked check`, `cargo audit`, the `boundaries` job and every `--locked` gate are green; and the owner's approval is recorded on the PR before it squash-lands. The GNOME visual result is observed later in T24 and T26 and is not T29's proof
+- **sub-tasks:**
+  - **T29.1 PRECHECK** — confirm T11 has landed on `main`; read from `Cargo.lock` the winit version eframe =0.37.0 resolves and from that version's manifest its license and the Adwaita title-drawing feature name.
+  - **T29.2 PROVE ABSENCE** — run `rexec -- cargo tree -e features -p fuzzy-dedupe-app -i winit --locked` and record that the Adwaita feature is off and `epaint_default_fonts` is absent.
+  - **T29.3 APPLY** — add the §8.3 `winit` row and its revision-history entry; declare `winit` in the app manifest at the exact version with `default-features = false` and the one feature; rebase on the current `main`, update the lock minimally without `--locked`, review the lock diff and add the C-7 entry (D-014); open the draft PR with the finding and ask the owner to approve.
+  - **T29.4 VERIFY** — rerun the feature tree, `rexec -- cargo deny --locked check`, `rexec -- cargo audit`, the `boundaries` check, the `--locked` gates and the spec, Prettier and markdownlint checks on the spec file.
+  - **T29.5 PROVE IDEMPOTENCY** — rerun the resolution and confirm `Cargo.lock` is unchanged.
+  - **T29.6 Verify Task** — run PV-T29-001 and the repository gates; after owner approval, commit with the required `Plan-*` trailers and land with `gh-workflow land --pr N --method squash`; keep the branch.
 
 ### Phase P1: Engine, fixtures and platform
 
@@ -1402,6 +1438,7 @@ A failure found by T22, T24, T25, T26 or T27 blocks that task. The executor appe
 | PV-T27-001 | REQ-009 | T27 | inspection and approval | §19 exit list; Appendix B | Review the evidence file against the exit list; rerun final gates; obtain sign-off | Eight items passed with links; sign-off present | An exit item without a proof link blocks sign-off | GitHub, local | EV-005 |
 | PV-T27-002 | REQ-046 | T27 | inspection (binding comparison) | C-14 bindings and `git rev-parse` at the signed commit | Compare each cited record's binding with `git rev-parse "$SIGNED_OID":crates` and the three file object IDs; for each mismatch check EV-007 for a rerun bound to the signed tree or an equivalence review naming the `git diff` range | Every cited record equal, renewed or reviewed as non-functional | A T25 record from before T21's font integration, or a T24 record from before a renderer correction, cited without renewal is rejected; an equivalence review covering a `src/` code change is rejected; a documentation-only diff with a recorded review is accepted | local, reference workstation | EV-007 |
 | PV-T28-001 | REQ-045 | T28 | inspection and CI observation | §19 MS-1 completion; Appendix B.1 and B.3; pr-standard | `gh run list --commit "$SQUASH_OID"` for T27's and T28's squash commits; `gh-workflow admission --branch main`; review EV-008 and the spec diff; `project-standards spec validate --strict` | All six workflows succeed on both squash commits; no unadmitted commit; EV-008 holds B.3 fields and the checkpoint OIDs, PR numbers and squash OIDs of T1–T27 and completed corrections; the post-landing handoff record holds T28's checkpoint OID, PR number, squash OID and runs; Status cells and `DEV-` rows complete | Declaring MS-1 complete while a `main` run on T27's squash commit is red, an EV-008 missing a T1–T27 checkpoint OID, an EV-008 or §13 harvest that names a T28 identifier (which cannot exist when it is written), or a missing post-landing record is rejected; rewriting a lost post-landing record from `gh` queries is accepted and names no new commit | GitHub, local | EV-008 |
+| PV-T29-001 | REQ-047 | T29 | inspection and gate | §8.3 rule and owner approval on the PR; D-001; D-014 lock-delta rule | Review the merged §8.3 diff and the PR approval; `rexec -- cargo tree -e features -p fuzzy-dedupe-app -i winit --locked`; review the `Cargo.lock` diff; `rexec -- cargo deny --locked check`; `rexec -- cargo audit`; `boundaries` job and the `--locked` gates | `winit` row with version and license; owner approval present; `wayland-csd-adwaita` or its equivalent enabled for the app; no `epaint_default_fonts`; lock diff adds only winit's newly enabled closure and changes no existing version; every gate green | A PR merged without owner approval, a winit pin differing from eframe's resolution (a second winit in the lock), the `-notitle` feature, an enabled `epaint_default_fonts`, a changed existing lock version or a missing C-7 entry is rejected | rexec, CI, GitHub | ephemeral |
 
 ## Appendix C. Durable Evidence
 
