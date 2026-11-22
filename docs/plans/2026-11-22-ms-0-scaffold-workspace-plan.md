@@ -2,7 +2,7 @@
 plan_format: 3
 title: 'MS-0: Scaffold the Cargo workspace Implementation Plan'
 slug: 'ms-0-scaffold-workspace'
-status: active
+status: complete
 revision: 1
 revises_revision: 0
 revision_reason: 'initial plan'
@@ -495,12 +495,35 @@ After landing:
 
 ## 13. Close-out
 
-- **Completed:** pending. The harvest commit records the T1–T6 checkpoint OIDs, the MS-0 PR number, its squash OID and its `main` run results; the close-out PR's number, squash OID and `main` runs go to the post-landing handoff record (§10.1 step 5).
-- **Decisions / deviations harvested:** pending. Deviations are `DEV-` rows in the spec (T6). Scope questions go to the owner as `OQ-` rows, not into the plan.
-- **Risks closed / accepted:** pending.
-- **Deferred/discovered work filed:** pending. Appendix D items are carried to the MS-1 plan or the handoff.
-- **Source/ADR/handoff reconciliation:** pending. Sessions that end before close-out leave D-013 handoff-only commits; they do not replace this harvest. T6 records the NFR-008 status and any `DEV-` row in the spec. The close-out PR records the MS-0 status and the Appendix A contracts in the handoff through the agent-handoff skill. It also lists here the task checkpoint OIDs, the MS-0 PR number and its squash OID, because squash landing keeps the checkpoints only on their branches (D-010); the close-out PR's number and squash OID go to the post-landing handoff record.
-- **Scratch teardown:** only after the close-out PR lands with green `main` runs and the post-landing handoff record is on `main`. The topic and close-out branches may be deleted only after that, since they alone carry the `Plan-*` checkpoints.
+- **Completed:** The harvest commit records the T1–T6 checkpoint OIDs, the MS-0 PR number, its squash OID and its `main` run results; the close-out PR's number, squash OID and `main` runs go to the post-landing handoff record (§10.1 step 5).
+  - T1–T5 checkpoints, on the retained branch `feat/ms-0-scaffold-workspace`: T1 `29fc803ab90a2bf3deddfca4e2fd4bfc62c5a7f9`, T3 `7287227d89fe25eed55fdcfe7c8a37bb73e5b044`, T2 `ee33e4b34e0e6752518079d231f58f175efa605c`, T4 `d5e15de03a512d1042940ae8bf39f39e12e10936` and T5 `f5f73af749901572b3ef0d217541fbd9eeffcd63`, in branch order. T3 was integrated before T2.
+  - T6 checkpoint `81fb7408b2f0a834c99d4ff7f042253652167c7b`, on the retained branch `chore/ms-0-close-out`.
+  - MS-0 PR #9, squash-landed as `0b6dcbc64f1b842b9c222b373e233c50dd583414`.
+  - `main` runs on that squash, each concluding `success`: Rust 45066522708, REUSE 45066522715, Format 45066522955, Lint Markdown 45066522932, Validate project specs 45066522936 and GitHub Workflow admission 45066522706. `gh-workflow admission --branch main` reported 0 unadmitted commits.
+  - Evidence: EV-001 (`docs/evidence/ms-0-ci-gates.md`) and EV-002 (`docs/evidence/ms-0-completion-report.md`).
+- **Decisions / deviations harvested:** Deviations are `DEV-` rows in the spec (T6). Scope questions go to the owner as `OQ-` rows, not into the plan. MS-0 has no spec deviation, so no `DEV-` row was added. The plan-level decisions made during execution, each within the spec:
+  - `rust.yml` runs `cargo deny --locked check` instead of C-3's literal `cargo deny check`, because `--locked` is a cargo-deny global option and T2 requires it wherever the tool accepts it. Authority: T2's `--locked` invariant.
+  - cargo-deny `[bans] wildcards` stays at the 0.22 default (allow). T1's versionless internal path dependencies fail `wildcards = "deny"`, and `allow-wildcard-paths` applies only to `publish = false` crates, which the plan rules out. Authority: T2 executor discretion; recorded in a `deny.toml` comment.
+  - `.gitignore` is D-012 class a (2026 L3Digital LLC, `GPL-3.0-only`). A `REUSE.toml` comment notes that its lines 1–24 come from github/gitignore's Rust template, which is CC0-1.0 and requires no notice. Authority: the orchestrator, under D-012.
+  - `.codex/config.toml` is class c, annotated in `REUSE.toml` with no header, because it configures the agent harness rather than the build or CI and holds a managed key set (the same reasoning as `.editorconfig`). Authority: the orchestrator, under D-008.
+  - `LICENSES/` holds the canonical SPDX texts from `reuse download`, not upstream license files. For `LICENSES/Apache-2.0.txt`, the upstream holder line 'Copyright 2026 L3DigitalNet' was confirmed at project-standards v5.29.0 (A-005). Authority: T4 ledger preparation.
+  - T2 ran as two worker legs (gates; boundaries) with one checkpoint, and T3 ran concurrently with them on disjoint claims. Integration was serial, with T3 integrated before T2. Authority: the orchestrator; §8 asks only for serial commits.
+- **Risks closed / accepted:**
+  - R-001: not materialized; `cargo deny` and `cargo audit` are green on `main`.
+  - R-002: not materialized; the `reuse` job is green on the PR and on `main`.
+  - R-003: closed; the MS-1 plan was aligned with Appendix A before its promotion.
+  - R-004: handled; Prettier ran on every new YAML and Markdown file inside its task, and the `format` workflow is green in CI.
+- **Deferred/discovered work filed:** Appendix D items are carried to the MS-1 plan or the handoff.
+  - Appendix D, where each item now lives: the MS-1 plan (`docs/plans/2026-11-22-ms-1-ui-on-fixtures-plan.md`) owns removing `--no-tests=warn`, the UI-test job, Lucide icons with `LICENSES/ISC.txt`, and the C-7 entries and §8.3 rows for its crates. Later milestones own the platform edges from scanner (MS-2) and fileops (MS-5), and `tests/`, `benches/` and `packaging/`. Required status checks on `main` await an owner decision.
+  - Discovered: D-011 rule 5a does not catch an aliased `cfg!` macro (`use core::cfg as c;` then `c!(unix)`). Accepted residue, no rule added: `cfg!` evaluates to a bool and cannot remove code, so both branches still compile on every target, and an OS-API path in either branch still fails rule 5b. A renamed `cfg` used as an attribute fails with "cannot find attribute `c`" (checked with rustc 1.96), so it cannot compile code conditionally. It joins D-011's two named residues.
+  - Discovered: the class-a `REUSE.toml` globs may need rechecking after a standards reconcile drops new files into the folders they cover.
+  - Discovered: `LICENSES/GPL-3.0-only.txt` uses the SPDX canonical layout and is not byte-identical to `LICENSE`. PV-T4-002 requires only that `LICENSE` matches the gnu.org digest and that `reuse lint` accepts the `LICENSES/` text, and both hold.
+  - Discovered: both plan validators warn that T6's dependency on T5 names the artifact 'draft pr number' without support in either task's file claims. The warning is known and non-blocking, and the completed task definitions stay unchanged.
+- **Source/ADR/handoff reconciliation:** Sessions that end before close-out leave D-013 handoff-only commits; they do not replace this harvest. T6 records the NFR-008 status and any `DEV-` row in the spec. The close-out PR records the MS-0 status and the Appendix A contracts in the handoff through the agent-handoff skill. It also lists here the task checkpoint OIDs, the MS-0 PR number and its squash OID, because squash landing keeps the checkpoints only on their branches (D-010); the close-out PR's number and squash OID go to the post-landing handoff record.
+  - T6 set the spec's §17.3 NFR-008 Status; the Deviations Log is unchanged.
+  - No ADR changed.
+  - The handoff docs record MS-0's completion and the Appendix A contracts in this close-out PR, through the agent-handoff skill.
+- **Scratch teardown:** only after the close-out PR lands with green `main` runs and the post-landing handoff record is on `main`. The topic and close-out branches may be deleted only after that, since they alone carry the `Plan-*` checkpoints. Until then, both branches (`feat/ms-0-scaffold-workspace` and `chore/ms-0-close-out`) and the scratch state under `.project-pipeline/2026-11-22-ms-0-scaffold-workspace/` are retained.
 
 ## Appendix A. Interface and State Contracts
 
