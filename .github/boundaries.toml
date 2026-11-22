@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Boundary policy (plan Appendix A C-7), checked by
+# .github/scripts/check-boundaries.py under rules R1-R4 of plan D-011.
+#
+# This file mirrors spec §8.3 and plan C-1; it is not the approval record. A
+# change that adds a direct dependency adds its §8.3 row and its
+# [third-party] entry here in the same pull request, and a new workspace edge
+# must keep C-1's direction rules: domain depends on no workspace crate and
+# nothing depends on fuzzy-dedupe-app.
+
+# R1: the workspace path dependencies each crate may declare, of any
+# dependency kind. Equals plan Appendix A C-1 exactly.
+[edges]
+"fuzzy-dedupe-domain" = []
+"fuzzy-dedupe-platform" = ["fuzzy-dedupe-domain"]
+"fuzzy-dedupe-storage" = ["fuzzy-dedupe-domain"]
+"fuzzy-dedupe-scanner" = ["fuzzy-dedupe-domain", "fuzzy-dedupe-storage"]
+"fuzzy-dedupe-analyzers" = ["fuzzy-dedupe-domain", "fuzzy-dedupe-storage"]
+"fuzzy-dedupe-fileops" = ["fuzzy-dedupe-domain", "fuzzy-dedupe-storage"]
+"fuzzy-dedupe-engine" = [
+  "fuzzy-dedupe-domain",
+  "fuzzy-dedupe-storage",
+  "fuzzy-dedupe-scanner",
+  "fuzzy-dedupe-analyzers",
+  "fuzzy-dedupe-fileops",
+]
+"fuzzy-dedupe-app" = [
+  "fuzzy-dedupe-domain",
+  "fuzzy-dedupe-engine",
+  "fuzzy-dedupe-platform",
+]
+
+# R2: each approved direct third-party dependency, keyed by its real package
+# name (never a `package =` alias), mapped to the crates allowed to declare
+# it. Empty at MS-0, which has no third-party crate. Entry form:
+#   serde = ["fuzzy-dedupe-domain", "fuzzy-dedupe-storage"]
+[third-party]
+
+# R3: GUI crates, which only fuzzy-dedupe-app may declare. `*` entries are
+# shell-style globs over the package name.
+[gui]
+crates = [
+  "egui",
+  "egui_*",
+  "egui-*",
+  "eframe",
+  "epaint",
+  "epaint_*",
+  "emath",
+  "ecolor",
+  "winit",
+]
+
+# R4: OS-specific crates, which only fuzzy-dedupe-platform may declare. Any
+# target-specific dependency is confined to platform as well, whether or not
+# it is listed here.
+[os]
+crates = [
+  "libc",
+  "nix",
+  "rustix",
+  "windows",
+  "windows-sys",
+  "windows-*",
+  "winapi",
+  "winapi-*",
+  "core-foundation",
+  "core-foundation-sys",
+  "objc2",
+  "objc2-*",
+  "cocoa",
+  "security-framework",
+  "mach2",
+]

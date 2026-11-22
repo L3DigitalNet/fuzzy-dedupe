@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
 schema = 1
 
 [tools]

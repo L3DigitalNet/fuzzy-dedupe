@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+# REUSE licensing gate of spec §18.3 (plan Appendix A C-3). The job ID `reuse`
+# is a contract: required checks refer to it, so renaming it is a contract
+# change, not a cleanup.
+#
+# Supply chain (plan D-004): the only action is actions/checkout, pinned to
+# the commit admission.yml uses. reuse runs from PyPI at an exact version
+# through the runner's preinstalled pipx. Rejected: fsfe/reuse-action, a
+# third-party dependency the owner has not agreed to. Keep the version equal
+# to the one the local proof runs (`uvx reuse@6.3.0 lint`).
+
+name: REUSE
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reuse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Lint REUSE compliance
+        run: pipx run reuse==6.3.0 lint

@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Licensing record for every tracked file that does not carry its own SPDX
+# header (plan Appendix A C-5). Each annotation's holder and license follow the
+# file's origin (plan D-012), as established by the T4 origin ledger, not its
+# standards update policy:
+#   (a) original project files: 2026 L3Digital LLC, GPL-3.0-only;
+#   (b) copied unchanged from L3DigitalNet/project-standards v5.29.0: its
+#       holder and license (LICENSE line 68, "Copyright 2026 L3DigitalNet");
+#   (c) block- or key-managed files, and create-only scaffolds the project has
+#       since edited: both holders, GPL-3.0-only AND Apache-2.0;
+#   (d) third-party assets: their upstream holder and license.
+#
+# SCOPE: there is deliberately no `**` catch-all, and no glob may match `*.rs`,
+# any `Cargo.toml`, `deny.toml`, `.github/scripts/**`, `.github/boundaries.toml`
+# or a header-bearing workflow (`rust.yml`, `reuse.yml`, `admission.yml`, or
+# any workflow a later milestone adds). Those files carry inline SPDX headers
+# (plan D-008), and a header missing from one must stay a `reuse lint` failure
+# rather than be silently covered here. Standards-managed files are listed by
+# exact path, so a file a package adds later fails `reuse lint` until its
+# origin is classified.
+#
+# LICENSES/ and LICENSE are skipped by reuse itself and are not annotated.
+# Adding a new third-party asset class means adding its annotation and its
+# LICENSES/ text in the same change (C-5).
+
+version = 1
+
+# D-012 class (b): whole-file managed copies from project-standards v5.29.0;
+# each file's SHA-256 equals its content_digest in .standards/lock.toml.
+[[annotations]]
+path = [
+  ".agents/hooks/agent-handoff/session-start",
+  ".agents/skills/agent-handoff/SKILL.md",
+  ".agents/skills/agent-handoff/agents/openai.yaml",
+  ".agents/skills/github-workflow/SKILL.md",
+  ".agents/skills/github-workflow/agents/openai.yaml",
+  ".agents/skills/github-workflow/bin/gh-workflow",
+  ".agents/skills/github-workflow/references/field-vocabulary.md",
+  ".agents/skills/github-workflow/references/issue-structure.md",
+  ".agents/skills/github-workflow/references/org-schema.yaml",
+  ".agents/skills/github-workflow/references/pr-standard.md",
+  ".agents/skills/github-workflow/references/review-checklist.md",
+  ".agents/skills/github-workflow/references/summary-format.md",
+  ".agents/skills/project-toolbox/SKILL.md",
+  ".agents/skills/project-toolbox/agents/openai.yaml",
+  ".claude/skills/agent-handoff/SKILL.md",
+  ".claude/skills/github-workflow/SKILL.md",
+  ".claude/skills/github-workflow/bin/gh-workflow",
+  ".claude/skills/github-workflow/references/field-vocabulary.md",
+  ".claude/skills/github-workflow/references/issue-structure.md",
+  ".claude/skills/github-workflow/references/org-schema.yaml",
+  ".claude/skills/github-workflow/references/pr-standard.md",
+  ".claude/skills/github-workflow/references/review-checklist.md",
+  ".claude/skills/github-workflow/references/summary-format.md",
+  ".claude/skills/project-toolbox/SKILL.md",
+  ".github/workflows/format.yml",
+  ".github/workflows/lint-markdown.yml",
+  ".github/workflows/validate-specs.yml",
+  ".markdownlint.json",
+  ".prettierrc.json",
+  ".standards/packages/agent-handoff/policy.toml",
+  ".standards/packages/github-workflow/policy.toml",
+  ".standards/packages/project-toolbox/workflows/drift-detection.md",
+  ".standards/packages/project-toolbox/workflows/repo-housekeeping.md",
+]
+SPDX-FileCopyrightText = "2026 L3DigitalNet"
+SPDX-License-Identifier = "Apache-2.0"
+
+# D-012 class (b): create-only scaffolds whose SHA-256 still equals the lock's
+# content_digest, plus .standards/catalog.toml, which has no lock entry but is
+# byte-identical to upstream .standards/catalog.toml at v5.29.0. Editing any of
+# these moves it to class (c): move its path to the class (c) block in the same
+# change.
+[[annotations]]
+path = [
+  ".standards/catalog.toml",
+  "docs/adr/adr.template.md",
+  "docs/handoff/architecture.md",
+  "docs/handoff/bugs/.gitkeep",
+  "docs/handoff/credentials.md",
+  "docs/handoff/deployed.md",
+  "docs/handoff/sessions/.gitkeep",
+  "docs/usage.md",
+]
+SPDX-FileCopyrightText = "2026 L3DigitalNet"
+SPDX-License-Identifier = "Apache-2.0"
+
+# D-012 class (c): block- or key-managed files, and create-only scaffolds whose
+# SHA-256 no longer equals the lock's content_digest. .codex/config.toml stays
+# header-less: it configures the agent harness, not the build or CI, and holds
+# a managed key-set.
+[[annotations]]
+path = [
+  ".codex/config.toml",
+  ".editorconfig",
+  ".vscode/extensions.json",
+  ".vscode/settings.json",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "docs/STATUS.md",
+  "docs/TODO.md",
+  "docs/handoff/conventions.md",
+  "docs/handoff/specs-plans.md",
+  "docs/handoff/state.md",
+]
+SPDX-FileCopyrightText = ["2026 L3Digital LLC", "2026 L3DigitalNet"]
+SPDX-License-Identifier = "GPL-3.0-only AND Apache-2.0"
+
+# D-012 class (a): original project files that cannot carry, or by D-008 do
+# not carry, an inline header. Every glob ends in `.md`, so none can reach a
+# protected source path. docs/evidence/*.md covers the MS-0 evidence reports
+# that T5 and T6 add. Lines 1-24 of .gitignore come from github/gitignore's
+# Rust template, which is CC0-1.0 and requires no notice; the rest is project
+# content.
+[[annotations]]
+path = [
+  ".claude/settings.json",
+  ".gitignore",
+  ".standards/config.toml",
+  ".standards/lock.toml",
+  "Cargo.lock",
+  "README.md",
+  "THIRD-PARTY-NOTICES.md",
+  "docs/adr/README.md",
+  "docs/adr/adr-*.md",
+  "docs/evidence/*.md",
+  "docs/handoff/bugs/*.md",
+  "docs/handoff/sessions/*.md",
+  "docs/plans/*.md",
+  "docs/specs/canonical/fuzzy-dedupe.md",
+  "docs/specs/fuzzy_dedupe_spec.md",
+]
+SPDX-FileCopyrightText = "2026 L3Digital LLC"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+# D-012 class (d): unmodified IBM Plex TTFs (THIRD-PARTY-NOTICES.md). The
+# holder is verbatim from LICENSES/OFL-1.1.txt; keep the two in agreement.
+[[annotations]]
+path = "crates/fuzzy-dedupe-app/assets/fonts/*.ttf"
+SPDX-FileCopyrightText = 'Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"'
+SPDX-License-Identifier = "OFL-1.1"

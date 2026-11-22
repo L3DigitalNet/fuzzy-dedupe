@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
 # Pins the compiler for the workstation and the rexec worker; rustup installs it on first use.
 # rust-analyzer is listed because a pinned toolchain does not inherit components added to `stable`.
 [toolchain]
