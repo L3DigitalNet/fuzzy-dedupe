@@ -59,6 +59,10 @@ winit = ["fuzzy-dedupe-app"]
 crossbeam-channel = ["fuzzy-dedupe-engine"]
 # §8.3 row "similar" (MS-1).
 similar = ["fuzzy-dedupe-engine"]
+# §8.3 row "unicode-normalization" (MS-1).
+unicode-normalization = ["fuzzy-dedupe-engine"]
+# §8.3 row "proptest" (MS-1, development only).
+proptest = ["fuzzy-dedupe-engine"]
 
 # R3: GUI crates, which only fuzzy-dedupe-app may declare. `*` entries are
 # shell-style globs over the package name.
