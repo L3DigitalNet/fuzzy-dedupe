@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 L3Digital LLC
+# SPDX-License-Identifier: GPL-3.0-only
+# Decoy target of a symlinked preferences.toml; the writer must never change it.
+decoy = true

@@ -11,5 +11,19 @@ license.workspace = true
 [dependencies]
 fuzzy-dedupe-domain = { path = "../fuzzy-dedupe-domain" }
 
+# Every third-party crate here needs its spec §8.3 row and its
+# .github/boundaries.toml [third-party] entry (plan §3.4, MS-0 C-7), and adding
+# one is a D-014 change: a minimal lock update and a reviewed lock diff.
+#
+# Per-user directories (spec §8.3 row "etcetera"). Only its home-directory
+# lookup is used: the XDG resolution itself lives in dirs.rs so tests can
+# inject the environment, which etcetera's strategies read from the process.
+etcetera = "=0.11.0"
+# Folder picker (spec §8.3 row "rfd"). XDG desktop portal backend only
+# (spec C-016): `default-features = false` drops the `wayland` feature, whose
+# only use is parenting the dialog to a Wayland surface, and `gtk3` is never
+# enabled, so no GTK system library is linked.
+rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }
+
 [lints]
 workspace = true

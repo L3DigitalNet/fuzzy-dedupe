@@ -63,6 +63,10 @@ similar = ["fuzzy-dedupe-engine"]
 unicode-normalization = ["fuzzy-dedupe-engine"]
 # §8.3 row "proptest" (MS-1, development only).
 proptest = ["fuzzy-dedupe-engine"]
+# §8.3 row "rfd" (MS-1, folder picker behind the platform adapter).
+rfd = ["fuzzy-dedupe-platform"]
+# §8.3 row "etcetera" (MS-1, per-user directories behind the platform adapter).
+etcetera = ["fuzzy-dedupe-platform"]
 
 # R3: GUI crates, which only fuzzy-dedupe-app may declare. `*` entries are
 # shell-style globs over the package name.
