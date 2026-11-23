@@ -399,9 +399,18 @@ fn review(
         } => (*origin, *reviewed),
         _ => (QueueOrigin::Checkbox, None),
     };
+    // Only the dispatcher knows which command produced the outcome: a bulk
+    // Queue identical copies of one file and a single queue request both
+    // answer `Queued { files: 1 }`, and the C-05 outcome must not change to
+    // tell them apart. Only the bulk result sets a status line.
+    let bulk = matches!(command, ReviewCommand::QueueIdenticalCopies { .. });
     let outcome = services.engine.review(command);
     services.sync_view(state);
-    events::apply_review(state, &outcome);
+    if bulk {
+        events::apply_bulk_review(state, &outcome);
+    } else {
+        events::apply_review(state, &outcome);
+    }
     if let ReviewStatus::NeedsReview { file, counterpart } = outcome.status {
         let Some(request) = comparison_request(state, file, counterpart, CompareMode::Original)
         else {

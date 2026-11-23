@@ -559,7 +559,10 @@ fn apply_preferences(ctx: &Context, state: &PresentationState) {
 /// seeded decisions through the review service, so the shell starts on the
 /// review frames' state for the design scenario. Real scans start from New
 /// scan (T16).
-fn adopt_scenario(services: &mut Services, state: &mut PresentationState, kind: ScenarioKind) {
+///
+/// Public so tests can adopt a scenario other than the startup one through
+/// this same path; the app itself calls it once, from [`FuzzyDedupeApp::new`].
+pub fn adopt_scenario(services: &mut Services, state: &mut PresentationState, kind: ScenarioKind) {
     let engine = &mut services.engine;
     let scan = engine.reserve_scan_id();
     let scenario = match fixtures::build(kind, scan, fixtures::DEFAULT_SEED) {
@@ -574,6 +577,10 @@ fn adopt_scenario(services: &mut Services, state: &mut PresentationState, kind: 
         return;
     }
     events::install_results(state, Arc::clone(&scenario.results), ScanStage::Completed);
+    // Group titles are design-scenario fixture data (spec §11.1, frame
+    // `13:648`), installed here only, after `install_results` has cleared
+    // any earlier ones; every other scenario and every scan shows each
+    // header's reference name.
     if kind == ScenarioKind::Design {
         let sample = fixtures::design::sample();
         state.scan.files_scanned = sample.files_scanned;
@@ -582,6 +589,7 @@ fn adopt_scenario(services: &mut Services, state: &mut PresentationState, kind: 
             minute: sample.finished_at.minute,
         });
         state.findings.expanded = sample.expanded_groups.iter().copied().collect();
+        state.findings.group_titles = sample.group_titles;
     }
     services.sync_view(state);
 

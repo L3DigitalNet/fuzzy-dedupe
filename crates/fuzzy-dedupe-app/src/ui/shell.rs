@@ -158,6 +158,7 @@ pub fn show(ui: &mut Ui, state: &mut PresentationState, intents: &mut IntentQueu
                 scan,
                 operation,
                 preferences,
+                dialog,
                 ..
             } = state;
             let mut cx = WorkspaceCx {
@@ -168,6 +169,7 @@ pub fn show(ui: &mut Ui, state: &mut PresentationState, intents: &mut IntentQueu
                 operation,
                 preferences,
                 input_enabled,
+                menu: dialog.menu(),
             };
             let workspace = *workspace;
             ui.allocate_ui_with_layout(

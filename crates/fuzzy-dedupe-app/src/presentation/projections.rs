@@ -13,8 +13,8 @@ use std::fmt::Write as _;
 use std::time::SystemTime;
 
 use fuzzy_dedupe_domain::{
-    ContainmentDirection, FileId, Group, GroupId, Measurement, Member, MemberDecision, Refusal,
-    RelationKind, ScanId, ScanResults, rule_counterpart,
+    ContainmentDirection, FileId, Group, GroupId, Measurement, Member, MemberDecision, MemberRole,
+    Refusal, RelationKind, ScanId, ScanResults,
 };
 
 use crate::presentation::state::{
@@ -239,89 +239,44 @@ pub struct MemberView {
     pub unique: Option<u64>,
 }
 
-/// The group's current reference.
-///
-/// The results keep the scan's default reference; Make this the reference
-/// changes it only in the review service, whose outcomes reach presentation
-/// as [`MemberDecision::Reference`] in `QueueState::decisions` (every row
-/// whose role changed is reported, so the old reference's entry changes in
-/// the same outcome). Rejected: trusting `Group::reference()` alone, which
-/// would keep labelling rows against the scan-time reference after the user
-/// changed it.
+/// The group's current reference, by the recorded roles
+/// ([`QueueState::reference`]).
 #[must_use]
 pub fn current_reference(group: &Group, queue: &QueueState) -> Option<FileId> {
-    group
-        .members
-        .iter()
-        .find(|m| queue.decisions.get(&m.file) == Some(&MemberDecision::Reference))
-        .or_else(|| group.reference())
-        .or_else(|| group.members.first())
-        .map(|m| m.file)
+    queue.reference(group)
 }
 
-/// `member`'s counterpart and evidence under the current review state.
+/// `member`'s counterpart and evidence under its current role, which the
+/// review service reported ([`QueueState::role`]).
 ///
-/// Cross-crate contract with the engine's `ReviewState::link`
-/// (`fuzzy-dedupe-engine/src/review/policy.rs`): a queued target is measured
-/// against the counterpart its approval names; otherwise, while the scan's
-/// reference stands, the scan's own link applies, and after a reference
-/// change the §10.1 rule ([`rule_counterpart`]) recomputes it, because Make
-/// this the reference discards Compare choices in the group.
+/// The role is the only source: queue entries and decisions are never used
+/// to guess a counterpart, because a Compare review can move the
+/// counterpart of a row that is not queued and has no telling decision.
+/// Rejected: recomputing it by the §10.1 rule after a reference change,
+/// which duplicates the engine's policy and misses Compare choices.
 ///
-/// Limitation: a Compare-chosen counterpart of a row that is not queued
-/// (Keep both, an acknowledgment) is not visible here. The review outcome
-/// carries it (`FileReviewState::role`), but `events::apply_review` records
-/// only the decision, so presentation has no copy of the new role.
+/// Match and Unique are the link's own: the review service builds every
+/// link from the direct edge when one exists, and from the reviewed
+/// comparison when none does, which shows no invented score (§10.1).
 #[must_use]
 pub fn member_view(group: &Group, queue: &QueueState, member: &Member) -> MemberView {
     let reference = current_reference(group, queue).unwrap_or(member.file);
-    if member.file == reference {
-        return MemberView {
+    match queue.role(member) {
+        MemberRole::Member(link) if member.file != reference => MemberView {
+            reference,
+            counterpart: Some(link.counterpart),
+            measurement: link.measurement,
+            unique: Some(link.unique_lines),
+        },
+        _ => MemberView {
             reference,
             counterpart: None,
             measurement: None,
             unique: None,
-        };
-    }
-    let scan_reference = group.reference().map(|m| m.file);
-    let counterpart = queue
-        .entries
-        .get(&member.file)
-        .map(|entry| entry.counterpart)
-        .or_else(|| {
-            if scan_reference == Some(reference) {
-                member.counterpart()
-            } else {
-                rule_counterpart(&group.edges, reference, member.file)
-            }
-        });
-    let Some(counterpart) = counterpart else {
-        return MemberView {
-            reference,
-            counterpart: None,
-            measurement: None,
-            unique: None,
-        };
-    };
-    let link = member.link().filter(|l| l.counterpart == counterpart);
-    let edge = group.edge_between(member.file, counterpart);
-    MemberView {
-        reference,
-        counterpart: Some(counterpart),
-        measurement: edge
-            .and_then(|e| e.measurement_from(member.file))
-            .or_else(|| link.and_then(|l| l.measurement)),
-        unique: edge
-            .and_then(|e| e.unique_lines_of(member.file))
-            .or_else(|| link.map(|l| l.unique_lines)),
+        },
     }
 }
 
-/// Builds the visible-row projection: groups that pass the search and the
-/// match-type filter, in sort order, each header followed by its member
-/// rows while expanded. Groups stay intact: sorting moves whole groups and
-/// the in-group order is fixed (current reference first, then the scan's
-/// strength order).
 /// One group's review-time facts, computed once per projection build.
 struct Prepared {
     index: usize,

@@ -17,11 +17,12 @@ pub mod theme;
 pub mod widgets;
 
 use crate::presentation::state::{
-    CompareState, FindingsState, OperationState, PreferencesState, QueueState, ScanState,
+    CompareState, FindingsState, MenuKind, OperationState, PreferencesState, QueueState, ScanState,
 };
 
 /// What a workspace view may read and change while drawing. Dialog state is
-/// absent on purpose: a view requests a popup with an intent.
+/// absent on purpose: a view requests a popup or menu with an intent, and
+/// reads back only which menu is open.
 pub struct WorkspaceCx<'a> {
     pub findings: &'a mut FindingsState,
     pub compare: &'a mut CompareState,
@@ -35,4 +36,10 @@ pub struct WorkspaceCx<'a> {
     /// False while a popup or menu is open: the view then reacts to no key,
     /// so no shortcut reaches it under a popup (spec §11.6).
     pub input_enabled: bool,
+    /// The menu the dialog host's single overlay slot holds this frame
+    /// (C-12), read from `DialogState` by `shell::show`. It is the only
+    /// source of which menu is open: a view draws the menu named here and
+    /// keeps no copy of it, so a close or swap the host makes (Esc, a
+    /// dispatch-side close) is seen on the next frame.
+    pub menu: Option<MenuKind>,
 }

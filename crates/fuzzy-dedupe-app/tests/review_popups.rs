@@ -43,8 +43,8 @@ mod review_popups {
     use fuzzy_dedupe_app::ui::theme;
     use fuzzy_dedupe_app::ui::widgets::dialog_host;
     use fuzzy_dedupe_domain::{
-        CompareMode, EvidenceUpdate, FileId, Group, IgnoreOptions, Measurement, MemberDecision,
-        MemberRole, QueueOrigin, QueueScope, RequestId, ScanResults, SnapshotId, Verification,
+        CompareMode, EvidenceUpdate, FileId, Group, IgnoreOptions, Measurement, MemberRole,
+        QueueOrigin, QueueScope, RequestId, ScanResults, SnapshotId, Verification,
     };
     use fuzzy_dedupe_engine::compare::{AlignedComparison, measure_unique};
     use fuzzy_dedupe_engine::fixtures::{self, ScenarioKind};
@@ -545,17 +545,14 @@ mod review_popups {
             .expect("file in a group")
     }
 
-    /// Whether `file` is its group's reference now: the review service
-    /// reported its row as Reference, or never reported the row and the scan
-    /// made it the reference (the design scenario replays Make this the
-    /// reference, so the scan's own reference is not enough).
+    /// Whether `file` is its group's reference now, by the role the review
+    /// service last reported for it, else the scan's (the design scenario
+    /// replays Make this the reference, so the scan's own reference is not
+    /// enough).
     fn is_reference(results: &ScanResults, queue: &QueueState, file: FileId) -> bool {
-        match queue.decisions.get(&file) {
-            Some(decision) => *decision == MemberDecision::Reference,
-            None => group_of(results, file)
-                .member(file)
-                .is_some_and(fuzzy_dedupe_domain::Member::is_reference),
-        }
+        group_of(results, file)
+            .member(file)
+            .is_some_and(|m| matches!(queue.role(m), MemberRole::Reference))
     }
 
     /// Asserts the §11.4 bulk rules on what the service queued: never the

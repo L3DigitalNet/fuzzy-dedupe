@@ -11,12 +11,17 @@
 //! items (Review cleanup (N), Settings); [`toolbar`] fills the leading part
 //! of that row, left to right.
 //!
-//! Menus. The dialog host owns the one overlay slot and the shell draws only
-//! the main menu, so this view draws its own three menus (Actions ▾, Sort ▾,
-//! the row menu) from `FindingsState::menu`, the request it mirrored when it
-//! asked for the menu (see `FindingsMenu` for when that mirror is trusted).
-//! Every menu item first closes the overlay, then sends its own intent, so
-//! the dialog host's focus return and a following popup see a closed menu.
+//! Menus. The dialog host owns the one overlay slot (C-12) and the shell
+//! draws only the main menu, so this view draws its own three menus
+//! (Actions ▾, Sort ▾, the row menu) whenever `WorkspaceCx::menu` names one
+//! of them. That field is the only source of which menu is open; the view
+//! keeps no copy, so a menu the host closes or swaps is drawn closed or
+//! swapped on the next frame. What the slot cannot hold (a row menu's
+//! anchor, whether the menu has drawn yet, Choose columns… expanded) is
+//! [`MenuLocal`], egui temporary data that resets whenever the slot holds
+//! no Findings menu. Every menu item first closes the overlay, then sends
+//! its own intent, so the dialog host's focus return and a following popup
+//! see a closed menu.
 //!
 //! Interpretations recorded for review:
 //! - 01c places the discovery-problem notice in the status bar, which is
@@ -30,7 +35,7 @@ use fuzzy_dedupe_engine::service::{EngineRequest, ReviewCommand};
 use crate::presentation::commands::{IntentQueue, UiIntent};
 use crate::presentation::projections::{self, RELATION_KINDS, SORT_ITEMS};
 use crate::presentation::state::{
-    DialogKind, DialogSubject, FindingsMenu, MenuKind, RowId, ScanStage, UniqueTextSubject,
+    DialogKind, DialogSubject, MenuKind, RowId, ScanStage, UniqueTextSubject,
 };
 use crate::ui::WorkspaceCx;
 use crate::ui::shell::{CONTROL_HEIGHT, GAP};
@@ -94,39 +99,95 @@ pub fn sort_button_label(cx: &WorkspaceCx<'_>) -> String {
     format!("Sort: {}", projections::sort_label(cx.findings.sort))
 }
 
-/// Drops the menu mirror once input is enabled again in a later pass: the
-/// dialog host closed the menu (Esc, a dispatch-side close) or refused it.
-fn sync_menu(ui: &Ui, cx: &mut WorkspaceCx<'_>) {
-    let pass = ui.ctx().cumulative_pass_nr();
-    if cx.input_enabled && cx.findings.menu.is_some_and(|menu| pass > menu.opened_pass) {
-        cx.findings.menu = None;
+/// Findings-local menu sub-state: what the overlay slot does not hold.
+///
+/// It lives in egui temporary data under [`menu_local_id`], not in
+/// `FindingsState`, and is tagged with the menu it describes. It is used
+/// only while `WorkspaceCx::menu` names that same menu, and is dropped
+/// whenever the slot holds no Findings menu, so a closed, refused or
+/// host-swapped menu never lends its anchor or expansion to the next one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MenuLocal {
+    /// The menu this sub-state belongs to. A tag only: which menu is open
+    /// is always read from `WorkspaceCx::menu`.
+    owner: MenuKind,
+    /// Where a row menu opens (the pointer, or below the focused row for
+    /// the keyboard). Toolbar menus anchor to their button and need none.
+    anchor: Option<egui::Pos2>,
+    /// The pass that wrote this sub-state. A request is dispatched after
+    /// its pass, so during that pass the slot does not hold the menu yet
+    /// and the sub-state must survive the reset in [`sync_menu`].
+    written_pass: u64,
+    /// The menu has drawn: its first item took keyboard focus.
+    drawn: bool,
+    /// Choose columns… is expanded inside Actions ▾.
+    choosing_columns: bool,
+    /// An item closed the menu while drawing; the sub-state is dropped.
+    closed: bool,
+}
+
+impl MenuLocal {
+    fn new(owner: MenuKind, anchor: Option<egui::Pos2>, pass: u64) -> Self {
+        Self {
+            owner,
+            anchor,
+            written_pass: pass,
+            drawn: false,
+            choosing_columns: false,
+            closed: false,
+        }
     }
 }
 
+fn menu_local_id() -> Id {
+    Id::unique("fd.findings.menu_local")
+}
+
+/// Whether `menu` is one this view draws.
+const fn is_findings_menu(menu: Option<MenuKind>) -> bool {
+    matches!(
+        menu,
+        Some(MenuKind::Actions | MenuKind::Sort | MenuKind::Row(_))
+    )
+}
+
+/// Drops the menu sub-state whenever the slot holds no Findings menu,
+/// except sub-state a request wrote in this very pass.
+fn sync_menu(ui: &Ui, cx: &WorkspaceCx<'_>) {
+    if is_findings_menu(cx.menu) {
+        return;
+    }
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.ctx().data_mut(|d| {
+        if d.get_temp::<MenuLocal>(menu_local_id())
+            .is_some_and(|local| local.written_pass < pass)
+        {
+            d.remove::<MenuLocal>(menu_local_id());
+        }
+    });
+}
+
+/// Asks the dialog host for menu `kind`, invoked by `invoker`. The host
+/// opens it when the intent is dispatched, after this pass, or refuses it
+/// when the slot is taken; either way the slot alone decides what draws.
 fn open_menu(
-    ui: &Ui,
-    cx: &mut WorkspaceCx<'_>,
+    ctx: &egui::Context,
     intents: &mut IntentQueue,
     kind: MenuKind,
-    anchor: egui::Pos2,
+    anchor: Option<egui::Pos2>,
     invoker: Id,
 ) {
-    cx.findings.menu = Some(FindingsMenu {
-        kind,
-        anchor,
-        opened_pass: ui.ctx().cumulative_pass_nr(),
-        fresh: true,
-        choosing_columns: false,
-    });
+    let local = MenuLocal::new(kind, anchor, ctx.cumulative_pass_nr());
+    ctx.data_mut(|d| d.insert_temp(menu_local_id(), local));
     intents.push(UiIntent::ToggleMenu {
         kind,
         invoker: Some(invoker),
     });
 }
 
-/// Closes the open Findings menu: the overlay, then the mirror.
-fn close_menu(cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
-    cx.findings.menu = None;
+/// Closes the open Findings menu: the overlay, and its sub-state with it.
+fn close_menu(local: &mut MenuLocal, intents: &mut IntentQueue) {
+    local.closed = true;
     intents.push(UiIntent::CloseOverlay);
 }
 
@@ -213,21 +274,18 @@ pub fn toolbar(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut Intent
         has_results,
     );
     if cx.input_enabled && actions.clicked() {
-        let anchor = actions.rect.left_bottom() + Vec2::new(0.0, 2.0);
         open_menu(
-            ui,
-            cx,
+            ui.ctx(),
             intents,
             MenuKind::Actions,
-            anchor,
+            None,
             actions_button_id(),
         );
     }
     let sort_label = sort_button_label(cx);
     let sort = button(ui, &sort_label, &sort_label, sort_button_id(), has_results);
     if cx.input_enabled && sort.clicked() {
-        let anchor = sort.rect.left_bottom() + Vec2::new(0.0, 2.0);
-        open_menu(ui, cx, intents, MenuKind::Sort, anchor, sort_button_id());
+        open_menu(ui.ctx(), intents, MenuKind::Sort, None, sort_button_id());
     }
 
     // Compare sits right before the shell's shared items; their width is
@@ -368,14 +426,25 @@ pub fn show(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQue
                 cx.findings.match_filter = None;
             }
         }
-        (Some(_), _) => grouped_table::show(
-            ui,
-            cx.findings,
-            cx.scan,
-            cx.queue,
-            intents,
-            cx.input_enabled,
-        ),
+        (Some(_), _) => {
+            let row_menu = grouped_table::show(
+                ui,
+                cx.findings,
+                cx.scan,
+                cx.queue,
+                intents,
+                cx.input_enabled,
+            );
+            if let Some(request) = row_menu {
+                open_menu(
+                    ui.ctx(),
+                    intents,
+                    MenuKind::Row(request.row),
+                    Some(request.at),
+                    request.invoker,
+                );
+            }
+        }
     }
 
     if cx.preferences.findings_column_widths != cx.findings.column_widths {
@@ -686,27 +755,43 @@ fn menu_item(
     response
 }
 
-/// Draws the open Findings menu, if this view opened one and it is still
-/// the overlay (see `FindingsMenu`).
+/// Where menu `kind` opens when its sub-state names no anchor: below its
+/// toolbar button (drawn earlier this pass), or for a row menu the host
+/// opened itself, at the table's top-left corner.
+fn default_anchor(ctx: &egui::Context, kind: MenuKind) -> egui::Pos2 {
+    let below = |id| {
+        ctx.read_response(id)
+            .map(|r| r.rect.left_bottom() + Vec2::new(0.0, 2.0))
+    };
+    match kind {
+        MenuKind::Actions => below(actions_button_id()),
+        MenuKind::Sort => below(sort_button_id()),
+        _ => ctx
+            .read_response(grouped_table::table_id())
+            .map(|r| r.rect.left_top()),
+    }
+    .unwrap_or(egui::Pos2::ZERO)
+}
+
+/// Draws the Findings menu the overlay slot holds, if it holds one.
 fn draw_menu(ui: &Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue, palette: &Palette) {
     let ctx = ui.ctx().clone();
-    let Some(menu) = cx.findings.menu else {
+    let Some(kind) = cx.menu.filter(|_| is_findings_menu(cx.menu)) else {
         return;
     };
     let pass = ctx.cumulative_pass_nr();
-    if cx.input_enabled
-        || pass <= menu.opened_pass
-        || ctx.memory(egui::Memory::top_modal_layer).is_some()
-    {
-        return;
-    }
+    let mut local = ctx
+        .data(|d| d.get_temp::<MenuLocal>(menu_local_id()))
+        .filter(|local| local.owner == kind)
+        .unwrap_or_else(|| MenuLocal::new(kind, None, pass));
+    let anchor = local.anchor.unwrap_or_else(|| default_anchor(&ctx, kind));
     let frame = egui::Frame::new()
         .fill(palette.color(Token::Surface))
         .stroke(Stroke::new(theme::BORDER_WIDTH, palette.color(Token::Line)))
         .corner_radius(theme::CORNER_RADIUS)
         .shadow(theme::shadow(mode_of(&ctx)))
         .inner_margin(egui::Margin::symmetric(1, 4));
-    let mut first = menu.fresh;
+    let mut first = !local.drawn;
     let mut focus_first = |response: &egui::Response| {
         if std::mem::take(&mut first) {
             response.request_focus();
@@ -715,22 +800,26 @@ fn draw_menu(ui: &Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue, palet
     let area = egui::Area::new(Id::unique("fd.findings.menu"))
         .order(egui::Order::Foreground)
         .constrain(true)
-        .fixed_pos(menu.anchor)
+        .fixed_pos(anchor)
         .show(&ctx, |ui| {
             frame.show(ui, |ui| {
                 ui.set_width(MENU_WIDTH - 2.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                match menu.kind {
-                    MenuKind::Sort => sort_menu(ui, cx, intents, palette, &mut focus_first),
-                    MenuKind::Actions => actions_menu(ui, cx, intents, palette, &mut focus_first),
-                    MenuKind::Row(row) => row_menu(ui, cx, intents, palette, row, &mut focus_first),
-                    _ => {}
+                match kind {
+                    MenuKind::Sort => {
+                        sort_menu(ui, cx, intents, palette, &mut local, &mut focus_first);
+                    }
+                    MenuKind::Actions => {
+                        actions_menu(ui, cx, intents, palette, &mut local, &mut focus_first);
+                    }
+                    MenuKind::Row(row) => {
+                        row_menu(ui, cx, intents, palette, row, &mut local, &mut focus_first);
+                    }
+                    MenuKind::Main | MenuKind::OnlyIn { .. } => {}
                 }
             });
         });
-    if let Some(open) = cx.findings.menu.as_mut() {
-        open.fresh = false;
-    }
+    local.drawn = true;
     // A press outside the menu closes it, as a menu does.
     let pressed_outside = ctx.input(|i| {
         i.pointer.any_pressed()
@@ -738,9 +827,16 @@ fn draw_menu(ui: &Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue, palet
                 .interact_pos()
                 .is_some_and(|pos| !area.response.rect.contains(pos))
     });
-    if pressed_outside && cx.findings.menu.is_some() {
-        close_menu(cx, intents);
+    if pressed_outside && !local.closed {
+        close_menu(&mut local, intents);
     }
+    ctx.data_mut(|d| {
+        if local.closed {
+            d.remove::<MenuLocal>(menu_local_id());
+        } else {
+            d.insert_temp(menu_local_id(), local);
+        }
+    });
 }
 
 fn sort_menu(
@@ -748,6 +844,7 @@ fn sort_menu(
     cx: &mut WorkspaceCx<'_>,
     intents: &mut IntentQueue,
     palette: &Palette,
+    local: &mut MenuLocal,
     focus_first: &mut dyn FnMut(&egui::Response),
 ) {
     for (key, label) in SORT_ITEMS {
@@ -757,7 +854,7 @@ fn sort_menu(
         focus_first(&item);
         if item.clicked() {
             cx.findings.sort = key;
-            close_menu(cx, intents);
+            close_menu(local, intents);
         }
     }
 }
@@ -767,6 +864,7 @@ fn actions_menu(
     cx: &mut WorkspaceCx<'_>,
     intents: &mut IntentQueue,
     palette: &Palette,
+    local: &mut MenuLocal,
     focus_first: &mut dyn FnMut(&egui::Response),
 ) {
     let queue_identical = menu_item(ui, ACTIONS_ITEMS[0], None, true, palette);
@@ -776,7 +874,7 @@ fn actions_menu(
             Some(p) if p.is_filtered() => QueueScope::Groups(p.shown_groups.clone()),
             _ => QueueScope::AllByteIdenticalGroups,
         };
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(UiIntent::OpenDialog {
             kind: DialogKind::QueueIdentical,
             subject: DialogSubject::QueueIdentical(scope),
@@ -787,18 +885,16 @@ fn actions_menu(
         if let Some(results) = &cx.scan.results {
             cx.findings.expanded = results.groups.iter().map(|g| g.id).collect();
         }
-        close_menu(cx, intents);
+        close_menu(local, intents);
     }
     if menu_item(ui, ACTIONS_ITEMS[2], None, true, palette).clicked() {
         cx.findings.expanded.clear();
-        close_menu(cx, intents);
+        close_menu(local, intents);
     }
     ui.separator();
-    let choosing = cx.findings.menu.is_some_and(|m| m.choosing_columns);
-    if menu_item(ui, ACTIONS_ITEMS[3], None, true, palette).clicked()
-        && let Some(menu) = cx.findings.menu.as_mut()
-    {
-        menu.choosing_columns = !choosing;
+    let choosing = local.choosing_columns;
+    if menu_item(ui, ACTIONS_ITEMS[3], None, true, palette).clicked() {
+        local.choosing_columns = !choosing;
     }
     if choosing {
         for column in grouped_table::OPTIONAL {
@@ -826,6 +922,7 @@ fn row_menu(
     intents: &mut IntentQueue,
     palette: &Palette,
     row: RowId,
+    local: &mut MenuLocal,
     focus_first: &mut dyn FnMut(&egui::Response),
 ) {
     let Some(results) = cx.scan.results.clone() else {
@@ -854,7 +951,7 @@ fn row_menu(
     if compare.clicked()
         && let Some(counterpart) = view.counterpart
     {
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(UiIntent::OpenCompare {
             target: file,
             counterpart,
@@ -867,7 +964,7 @@ fn row_menu(
         && let Some(counterpart) = view.counterpart
         && let Some(subject) = unique_text_subject(cx, &results, group, file, counterpart)
     {
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(UiIntent::OpenDialog {
             kind: DialogKind::UniqueTextReview,
             subject: DialogSubject::UniqueText(subject),
@@ -877,7 +974,7 @@ fn row_menu(
     let review_command = |command| UiIntent::Review { command, invoker };
     if menu_item(ui, ROW_MENU_ITEMS[1], None, !is_reference, palette).clicked() {
         let kept = cx.queue.decisions.get(&file) == Some(&MemberDecision::Kept);
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(review_command(ReviewCommand::MarkKept {
             file,
             kept: !kept,
@@ -885,7 +982,7 @@ fn row_menu(
     }
     ui.separator();
     if menu_item(ui, ROW_MENU_ITEMS[2], None, !is_reference, palette).clicked() {
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(review_command(ReviewCommand::MakeReference { file }));
     }
     if menu_item(
@@ -898,7 +995,7 @@ fn row_menu(
     .clicked()
     {
         let protected = cx.queue.is_protected(file);
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(review_command(ReviewCommand::ProtectFile {
             file,
             protected: !protected,
@@ -906,11 +1003,11 @@ fn row_menu(
     }
     ui.separator();
     if menu_item(ui, ROW_MENU_ITEMS[4], None, true, palette).clicked() {
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(UiIntent::OpenContainingFolder(file));
     }
     if menu_item(ui, ROW_MENU_ITEMS[5], Some("Ctrl+Shift+C"), true, palette).clicked() {
-        close_menu(cx, intents);
+        close_menu(local, intents);
         intents.push(UiIntent::CopyPath(file));
     }
 }
