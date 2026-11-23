@@ -9,6 +9,21 @@
 //! tests and helpers in its own submodule.
 
 mod presentation_hub {
+    /// Step bound for every `Harness::run` in both submodules, in place of kittest's
+    /// default of 4.
+    ///
+    /// A result from another thread (engine work, the folder picker, the
+    /// opener) may arrive part-way through a run, and the widgets it draws for
+    /// the first time each ask egui for up to two more frames (`widget_style`).
+    /// On slow CI runners that overran 4 steps (PR #39, "would have settled
+    /// after 6 steps"). 16 covers it with margin. A continuous repaint, from an
+    /// animation or a repaint loop, still exhausts 16, so `run()` keeps
+    /// catching runaway repaints.
+    ///
+    /// Each harness test file under `tests/` declares its own copy, because
+    /// they share no module; keep the copies equal.
+    const SETTLE_STEPS: u64 = 16;
+
     // ── Leg A: PV-T33-001 (recorded roles) and PV-T33-002 (forecast) ─────
 
     /// Review histories run against the real C-05 service
@@ -727,6 +742,7 @@ mod presentation_hub {
             assert!(expected.files > 0, "something to queue");
 
             let mut harness = Harness::builder()
+                .with_max_steps(super::SETTLE_STEPS)
                 .with_size(Vec2::new(1600.0, 960.0))
                 .build_ui_state(
                     |ui, p: &mut Popup| popup_frame(&ui.ctx().clone(), p),
@@ -1099,6 +1115,7 @@ mod presentation_hub {
                 ready: false,
             };
             let mut harness = Harness::builder()
+                .with_max_steps(super::SETTLE_STEPS)
                 .with_size(size)
                 .build_ui_state(|ui, rig: &mut Rig| rig.frame(ui), rig);
             theme::install(&harness.ctx, Vec::new());
@@ -1601,6 +1618,7 @@ mod presentation_hub {
                 measure: Box::new(fuzzy_dedupe_app::measure::NoMeasurement),
             };
             let mut h = Harness::builder()
+                .with_max_steps(super::SETTLE_STEPS)
                 .with_size(Vec2::new(1600.0, 960.0))
                 .build_ui_state(
                     |ui, slot: &mut AppSlot| {

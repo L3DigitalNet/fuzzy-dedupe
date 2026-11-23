@@ -42,6 +42,21 @@ mod form_popups {
     use fuzzy_dedupe_platform::open::{Location, OpenHandle, Opener};
     use fuzzy_dedupe_platform::picker::{FolderPicker, PickHandle, PickOutcome, PickRequest};
 
+    /// Step bound for every `Harness::run` here, in place of kittest's
+    /// default of 4.
+    ///
+    /// A result from another thread (engine work, the folder picker, the
+    /// opener) may arrive part-way through a run, and the widgets it draws for
+    /// the first time each ask egui for up to two more frames (`widget_style`).
+    /// On slow CI runners that overran 4 steps (PR #39, "would have settled
+    /// after 6 steps"). 16 covers it with margin. A continuous repaint, from an
+    /// animation or a repaint loop, still exhausts 16, so `run()` keeps
+    /// catching runaway repaints.
+    ///
+    /// Each harness test file under `tests/` declares its own copy, because
+    /// they share no module; keep the copies equal.
+    const SETTLE_STEPS: u64 = 16;
+
     // ── Doubles ──────────────────────────────────────────────────────────
 
     struct NoOpener;
@@ -127,6 +142,7 @@ mod form_popups {
             measure: Box::new(NoMeasurement),
         };
         let mut harness = Harness::builder()
+            .with_max_steps(SETTLE_STEPS)
             .with_size(Vec2::new(1600.0, 960.0))
             .build_ui_state(
                 |ui, slot: &mut Slot| {
@@ -211,10 +227,11 @@ mod form_popups {
     ///   `try_run`'s diagnostic steps, leaving a Completed stage behind a
     ///   budget that only the animation exhausted.
     ///
-    /// Any other overrun panics with kittest's own error, so a runaway
-    /// repaint outside a scan still fails the test. Raising `max_steps`
-    /// would hide that runaway instead, and a fixed `run_steps(n)` would
-    /// depend on how many frames the scan happens to take.
+    /// Any other overrun of [`SETTLE_STEPS`] panics with kittest's own
+    /// error, so a runaway repaint outside a scan still fails the test. No
+    /// step bound can absorb the animation itself, which never stops, and a
+    /// fixed `run_steps(n)` would depend on how many frames the scan happens
+    /// to take.
     #[track_caller]
     fn settle(h: &mut Shell) {
         let before = (state(h).scan.scan, state(h).scan.stage);

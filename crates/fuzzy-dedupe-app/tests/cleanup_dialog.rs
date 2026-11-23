@@ -30,8 +30,8 @@ mod cleanup_dialog {
 
     use egui::accesskit::Role;
     use egui::{Event, Key, Modifiers, Vec2};
-    use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT as _, Queryable};
+    use egui_kittest::{ExceededMaxStepsError, Harness};
     use fuzzy_dedupe_app::presentation::commands::{self, IntentQueue, Services, UiIntent};
     use fuzzy_dedupe_app::presentation::events;
     use fuzzy_dedupe_app::presentation::state::{
@@ -53,6 +53,21 @@ mod cleanup_dialog {
     use fuzzy_dedupe_platform::dirs::AppDirs;
     use fuzzy_dedupe_platform::open::{OpenHandle, Opener};
     use fuzzy_dedupe_platform::picker::{FolderPicker, PickHandle, PickOutcome, PickRequest};
+
+    /// Step bound for every `Harness::run` here, in place of kittest's
+    /// default of 4.
+    ///
+    /// A result from another thread (engine work, the folder picker, the
+    /// opener) may arrive part-way through a run, and the widgets it draws for
+    /// the first time each ask egui for up to two more frames (`widget_style`).
+    /// On slow CI runners that overran 4 steps (PR #39, "would have settled
+    /// after 6 steps"). 16 covers it with margin. A continuous repaint, from an
+    /// animation or a repaint loop, still exhausts 16, so `run()` keeps
+    /// catching runaway repaints.
+    ///
+    /// Each harness test file under `tests/` declares its own copy, because
+    /// they share no module; keep the copies equal.
+    const SETTLE_STEPS: u64 = 16;
 
     /// Outer bound on any wait for engine events; simulated runs take
     /// microseconds.
@@ -110,6 +125,39 @@ mod cleanup_dialog {
         /// Unset until the theme is installed: the harness draws a first
         /// frame on build, before the compact font families exist.
         ready: bool,
+        /// Engine events held back from the presentation while set; see
+        /// [`Hold`].
+        hold: Option<Hold>,
+    }
+
+    /// Delays delivery of engine events to the presentation, so a test can
+    /// choose the frame of a `run()` on which a worker's result lands.
+    ///
+    /// This stands in for thread timing, which the CI flake depended on: on
+    /// a slow runner the cleanup plan arrived part-way through `run()`'s
+    /// step budget. The engine still works on its own thread; only the
+    /// rig's drain into `events::apply` is deferred.
+    struct Hold {
+        events: Vec<EngineEvent>,
+        /// `None` holds indefinitely. `Some(n)` releases everything held on
+        /// the frame after `n` more frames; each frame it holds requests a
+        /// repaint, as a worker's notify would, so `run()` keeps stepping
+        /// until the release instead of settling early.
+        release_in: Option<u32>,
+    }
+
+    impl Hold {
+        fn has_plan(&self) -> bool {
+            self.events.iter().any(|e| {
+                matches!(
+                    e,
+                    EngineEvent::Cleanup {
+                        event: CleanupEvent::PlanBuilt(_),
+                        ..
+                    }
+                )
+            })
+        }
     }
 
     impl Rig {
@@ -119,7 +167,22 @@ mod cleanup_dialog {
             }
             let ctx = ui.ctx().clone();
             if self.logic {
-                for event in self.services.engine.drain_events(256) {
+                let mut batch = self.services.engine.drain_events(256);
+                if let Some(hold) = &mut self.hold {
+                    hold.events.append(&mut batch);
+                    match hold.release_in {
+                        Some(0) => {
+                            batch = std::mem::take(&mut hold.events);
+                            self.hold = None;
+                        }
+                        Some(n) => {
+                            hold.release_in = Some(n - 1);
+                            ctx.request_repaint();
+                        }
+                        None => {}
+                    }
+                }
+                for event in batch {
                     events::apply(&mut self.state, event);
                 }
                 self.services.poll(&mut self.state);
@@ -237,6 +300,12 @@ mod cleanup_dialog {
 
     /// The rig on `kind`, adopted and seeded as `app.rs` does it.
     fn launch(name: &str, kind: ScenarioKind) -> Dialog {
+        launch_with(name, kind, SETTLE_STEPS)
+    }
+
+    /// [`launch`] with an explicit `run()` step bound; only the mid-run
+    /// regression test passes anything but [`SETTLE_STEPS`].
+    fn launch_with(name: &str, kind: ScenarioKind, max_steps: u64) -> Dialog {
         let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
         let scan = engine.reserve_scan_id();
         let scenario =
@@ -257,6 +326,7 @@ mod cleanup_dialog {
             submitted: Vec::new(),
             invoker: None,
             ready: false,
+            hold: None,
         };
         events::install_results(
             &mut rig.state,
@@ -281,6 +351,7 @@ mod cleanup_dialog {
         }
         let mut harness = Harness::builder()
             .with_size(Vec2::new(1600.0, 960.0))
+            .with_max_steps(max_steps)
             .build_ui_state(|ui, rig: &mut Rig| rig.frame(ui), rig);
         theme::install(&harness.ctx, Vec::new());
         harness.state_mut().ready = true;
@@ -886,6 +957,58 @@ mod cleanup_dialog {
         );
         assert!(button_enabled(h, "Hide journal"));
         assert_no_permanent_delete(h);
+    }
+
+    // ── A worker's result landing mid-run ───────────────────────────────
+
+    /// Opens the cleanup dialog with the engine's plan held back, waits
+    /// until the engine has built it, then releases it on step 4 of one
+    /// `run()` and returns that run's outcome.
+    ///
+    /// Pins the PR #39 CI flake: the plan's first-drawn widgets ask egui
+    /// for two more frames (`theme/mod.rs:37`, `widget_style`), so the run
+    /// settles on step 6, as the CI log reported. Step 4 is the earliest
+    /// release kittest's default budget of 4 rejects: kittest 0.37 checks
+    /// for a settled frame before it counts step 5 as an overrun, so a
+    /// release on step 3 settles on step 5 and passes.
+    fn release_plan_mid_run(h: &mut Dialog) -> Result<u64, ExceededMaxStepsError> {
+        h.state_mut().hold = Some(Hold {
+            events: Vec::new(),
+            release_in: None,
+        });
+        h.get_by_role_and_label(Role::Button, INVOKER).click();
+        h.run();
+        let deadline = Instant::now() + TIMEOUT;
+        while !h.state().hold.as_ref().is_some_and(Hold::has_plan) {
+            assert!(Instant::now() < deadline, "timed out waiting for the plan");
+            h.step();
+            std::thread::yield_now();
+        }
+        h.run();
+        assert_eq!(phase(h), CleanupPhase::Building, "the plan is still held");
+        if let Some(hold) = &mut h.state_mut().hold {
+            hold.release_in = Some(3);
+        }
+        h.try_run()
+    }
+
+    #[test]
+    fn cleanup_dialog_a_plan_landing_mid_run_settles_within_the_bound() {
+        // The control: kittest's default budget overruns on this schedule,
+        // so the schedule really reproduces the flake.
+        let mut tight = launch_with("mid-run-tight", ScenarioKind::Design, 4);
+        let overrun = release_plan_mid_run(&mut tight).expect_err("4 steps overrun");
+        assert!(
+            overrun.steps_to_settle.is_some(),
+            "a late arrival settles, it does not repaint forever: {overrun}"
+        );
+
+        let mut h = launch("mid-run", ScenarioKind::Design);
+        let steps = release_plan_mid_run(&mut h).unwrap_or_else(|err| panic!("{err}"));
+        assert!(steps >= 4, "the run reached the release: {steps} steps");
+        assert_eq!(phase(&h), CleanupPhase::Review);
+        assert_label(&h, "Review cleanup");
+        assert!(button_enabled(&h, "Move 3 files to Trash"));
     }
 
     // ── The title hook ───────────────────────────────────────────────────

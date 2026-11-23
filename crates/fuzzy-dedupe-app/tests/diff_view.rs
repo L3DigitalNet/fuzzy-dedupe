@@ -42,6 +42,21 @@ mod diff_view {
     use fuzzy_dedupe_engine::fixtures::{DEFAULT_SEED, FileContent, FixtureContents};
     use fuzzy_dedupe_engine::service::{Engine, EngineConfig, EngineEvent, EngineRequest, Origin};
 
+    /// Step bound for every `Harness::run` here, in place of kittest's
+    /// default of 4.
+    ///
+    /// A result from another thread (engine work, the folder picker, the
+    /// opener) may arrive part-way through a run, and the widgets it draws for
+    /// the first time each ask egui for up to two more frames (`widget_style`).
+    /// On slow CI runners that overran 4 steps (PR #39, "would have settled
+    /// after 6 steps"). 16 covers it with margin. A continuous repaint, from an
+    /// animation or a repaint loop, still exhausts 16, so `run()` keeps
+    /// catching runaway repaints.
+    ///
+    /// Each harness test file under `tests/` declares its own copy, because
+    /// they share no module; keep the copies equal.
+    const SETTLE_STEPS: u64 = 16;
+
     /// The Document style's row height in units.
     const ROW: f32 = 22.0;
 
@@ -253,6 +268,7 @@ mod diff_view {
     /// styles, so character widths are IBM Plex Mono's.
     fn view(compare: CompareState) -> View {
         let mut harness = Harness::builder()
+            .with_max_steps(SETTLE_STEPS)
             .with_size(Vec2::new(1600.0, 800.0))
             .build_ui_state(
                 |ui, slot: &mut Slot| {
