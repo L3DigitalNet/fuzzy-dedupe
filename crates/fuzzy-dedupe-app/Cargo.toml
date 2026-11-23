@@ -7,6 +7,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 # The library target exists so integration tests under tests/ can reach the
 # UI modules; the bin-only crate had no target they could link against.
