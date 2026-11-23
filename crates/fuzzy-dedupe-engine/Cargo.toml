@@ -24,6 +24,14 @@ crossbeam-channel = "=0.5.17"
 # Line differences for Compare; first used by the comparison service (T6).
 # The default `text` feature is the line-diff API; it adds no crate.
 similar = "=3.2.1"
+# Unicode NFC for the comparison service's Normalized view (T6).
+unicode-normalization = "=0.1.26"
+
+[dev-dependencies]
+# Normalization property tests for the comparison service (T6). Without the
+# default features, which add the fork and timeout runners and their
+# process-spawning dependencies; `std` alone runs properties in-process.
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
