@@ -81,6 +81,13 @@ jobs:
       # job, so losing the test suite cannot pass silently.
       - name: Run tests
         run: cargo nextest run --workspace --locked
+      # PV-T31-001 exhaustive tier: the review-policy enumeration at the
+      # plan's bound needs a release build, so its tests are #[ignore]d in
+      # the debug run above and run only here. A filter that matches no test
+      # exits 4 and fails the step, so renaming the module cannot pass
+      # silently.
+      - name: Run the review-policy enumeration (release)
+        run: cargo nextest run -p fuzzy-dedupe-engine --release --locked --run-ignored only -E 'test(review_policy::enumeration)'
       # nextest does not run documentation tests, so they run separately.
       - name: Run documentation tests
         run: cargo test --doc --workspace --locked

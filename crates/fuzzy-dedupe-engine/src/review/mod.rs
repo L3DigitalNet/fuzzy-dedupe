@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 L3Digital LLC
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Review and queue policy service (plan C-05). Stub until T7.
+//! Review and queue policy service (plan C-05).
 //!
 //! The single authority that evaluates every queue entry point and owns the
 //! scan-scoped decision set (plan D-003); presentation's `QueueState` is a
-//! read model updated from [`ReviewOutcome`]s. T7 fills this module, adding
-//! `policy.rs`, behind the calls [`crate::service::Engine`] makes: `new`,
-//! `load_scan`, `apply` and `validation_view`. Those shapes and the command
-//! and outcome types below are the C-02 contract and stay fixed.
+//! read model updated from [`ReviewOutcome`]s. The policy itself is the
+//! state machine in `policy.rs`, behind the calls [`crate::service::Engine`]
+//! makes: `new`, `load_scan`, `apply` and `validation_view`. Those shapes and
+//! the command and outcome types below are the C-02 contract and stay fixed.
 //!
 //! Two engine-side duties frame the service. Before `apply`, the engine
 //! resolves a command's `reviewed` request ID to a trusted
@@ -26,6 +26,10 @@ use fuzzy_dedupe_domain::{
 };
 
 use crate::service::{EngineModule, NotImplemented};
+
+mod policy;
+
+use policy::ReviewState;
 
 /// The C-05 operations. Every one runs synchronously on the UI thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,37 +158,86 @@ impl ReviewOutcome {
 }
 
 /// The review service, owned by [`crate::service::Engine`].
-#[derive(Debug, Default)]
-pub struct ReviewService;
+///
+/// `Clone`, `Eq` and `Hash` exist for the PV-T7-001 enumeration, which
+/// memoises visited states. Equality is exact over the decision state and
+/// compares the loaded results by identity, so two services are equal only
+/// when they answer every later command identically.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ReviewService {
+    /// `None` until the first `load_scan`.
+    state: Option<ReviewState>,
+}
 
 impl ReviewService {
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self { state: None }
     }
 
-    /// Installs the result set later commands apply to.
-    pub fn load_scan(&mut self, _results: Arc<ScanResults>) {}
+    /// Installs the result set later commands apply to, replacing the
+    /// previous scan's queue, decisions and review-time roles entirely.
+    pub fn load_scan(&mut self, results: Arc<ScanResults>) {
+        self.state = Some(ReviewState::load(results));
+    }
 
     /// Applies `command`. `reviewed` is the engine-resolved evidence of the
     /// command's `reviewed` request ID: present exactly when the command
     /// named one and it matched.
+    ///
+    /// Never blocks and never calls back into the engine: the engine runs
+    /// this inside its validation-board critical section (plan D-008).
+    /// Before any scan is loaded, a command naming a file is refused as
+    /// [`Refusal::UnknownFile`] and every other command changes nothing.
     pub fn apply(
         &mut self,
-        _command: ReviewCommand,
-        _reviewed: Option<ReviewedPair>,
+        command: ReviewCommand,
+        reviewed: Option<ReviewedPair>,
     ) -> ReviewOutcome {
-        ReviewOutcome::not_implemented()
+        match &mut self.state {
+            Some(state) => state.apply(command, reviewed),
+            None => Self::without_scan(&command),
+        }
     }
 
     /// The state cleanup revalidates against, or `Ok(None)` before any scan
     /// is loaded. The queue it lists is also what a cleanup plan is built
-    /// from.
+    /// from, and every listed entry satisfies
+    /// [`ValidationView::binding_is_current`] for its own binding.
     ///
     /// # Errors
     ///
-    /// [`NotImplemented`] until T7 lands.
+    /// Never; the `Result` is the C-02 shape that stub modules answer with
+    /// [`NotImplemented`].
     pub fn validation_view(&self) -> Result<Option<ValidationView>, NotImplemented> {
-        Err(NotImplemented::new(EngineModule::Review))
+        Ok(self.state.as_ref().map(ReviewState::view))
+    }
+
+    fn without_scan(command: &ReviewCommand) -> ReviewOutcome {
+        let file = match command {
+            ReviewCommand::RequestQueue { file, .. }
+            | ReviewCommand::AcknowledgeUniqueText { file, .. }
+            | ReviewCommand::KeepBoth { file, .. }
+            | ReviewCommand::RemoveFromQueue { file }
+            | ReviewCommand::MarkKept { file, .. }
+            | ReviewCommand::ProtectFile { file, .. }
+            | ReviewCommand::MakeReference { file }
+            | ReviewCommand::UpdateEvidence(EvidenceUpdate::FileSnapshot { file, .. }) => *file,
+            ReviewCommand::QueueIdenticalCopies { .. } => {
+                return ReviewOutcome {
+                    status: ReviewStatus::Queued { files: 0 },
+                    changed: Vec::new(),
+                    invalidated: Vec::new(),
+                };
+            }
+            ReviewCommand::ClearForNewScan | ReviewCommand::UpdateEvidence(_) => {
+                return ReviewOutcome {
+                    status: ReviewStatus::Applied,
+                    changed: Vec::new(),
+                    invalidated: Vec::new(),
+                };
+            }
+        };
+        ReviewOutcome::refused(file, Refusal::UnknownFile)
     }
 }
