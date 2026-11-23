@@ -90,6 +90,18 @@ impl DialogDraft {
         }
     }
 
+    /// The title the dialog host draws for this popup this frame: the
+    /// popup's fixed [`DialogKind::title`], except Review cleanup, whose
+    /// title follows its phase (spec §11.6: "Moving files to Trash" while
+    /// running).
+    #[must_use]
+    pub fn title(&self, kind: DialogKind, cx: &DialogCx<'_>) -> &'static str {
+        match self {
+            Self::Cleanup(_) => cleanup::title(cx),
+            _ => kind.title(),
+        }
+    }
+
     /// Draws the popup's body and footer.
     pub fn show(&mut self, ui: &mut egui::Ui, cx: &mut DialogCx<'_>) -> DialogResponse {
         match self {

@@ -262,7 +262,7 @@ fn draw(
                     ui.set_min_size(size - Vec2::splat(2.0 * CONTENT_INSET));
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(kind.title())
+                            egui::RichText::new(draft.title(kind, cx))
                                 .text_style(CompactStyle::Title.text_style()),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

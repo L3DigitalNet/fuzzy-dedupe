@@ -712,7 +712,14 @@ mod shell {
         h.run();
         assert_eq!(open_dialog(&h), None);
         assert_eq!(state(&h).queue, queued, "nothing left the queue");
-        assert_eq!(state(&h).operation.revision, None, "no plan was submitted");
+        assert!(!state(&h).operation.authorized, "nothing was confirmed");
+        assert!(
+            matches!(
+                state(&h).operation.phase,
+                CleanupPhase::Building | CleanupPhase::Review
+            ),
+            "Enter ran nothing"
+        );
         assert!(
             h.get_by_role_and_label(Role::Button, "Review cleanup (3)")
                 .is_focused()
