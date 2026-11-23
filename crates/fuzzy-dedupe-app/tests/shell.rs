@@ -55,6 +55,21 @@ mod shell {
     use fuzzy_dedupe_platform::open::{Location, OpenHandle, Opener};
     use fuzzy_dedupe_platform::picker::{FolderPicker, PickHandle, PickOutcome, PickRequest};
 
+    /// Step bound for every `Harness::run` here, in place of kittest's
+    /// default of 4.
+    ///
+    /// A result from another thread (engine work, the folder picker, the
+    /// opener) may arrive part-way through a run, and the widgets it draws for
+    /// the first time each ask egui for up to two more frames (`widget_style`).
+    /// On slow CI runners that overran 4 steps (PR #39, "would have settled
+    /// after 6 steps"). 16 covers it with margin. A continuous repaint, from an
+    /// animation or a repaint loop, still exhausts 16, so `run()` keeps
+    /// catching runaway repaints.
+    ///
+    /// Each harness test file under `tests/` declares its own copy, because
+    /// they share no module; keep the copies equal.
+    const SETTLE_STEPS: u64 = 16;
+
     // ── Doubles ──────────────────────────────────────────────────────────
 
     #[derive(Clone, Default)]
@@ -156,20 +171,23 @@ mod shell {
 
     fn launch_sized(name: &str, size: Vec2) -> (Shell, Fixture) {
         let (deps, fixture) = fixture(name);
-        let mut harness = Harness::builder().with_size(size).build_ui_state(
-            |ui, slot: &mut Slot| {
-                if let Some(app) = slot.app.as_mut() {
-                    if slot.logic {
-                        app.run_logic(ui.ctx());
+        let mut harness = Harness::builder()
+            .with_max_steps(SETTLE_STEPS)
+            .with_size(size)
+            .build_ui_state(
+                |ui, slot: &mut Slot| {
+                    if let Some(app) = slot.app.as_mut() {
+                        if slot.logic {
+                            app.run_logic(ui.ctx());
+                        }
+                        app.draw(ui);
                     }
-                    app.draw(ui);
-                }
-            },
-            Slot {
-                app: None,
-                logic: true,
-            },
-        );
+                },
+                Slot {
+                    app: None,
+                    logic: true,
+                },
+            );
         let app = FuzzyDedupeApp::new(&harness.ctx, deps).expect("engine starts");
         harness.state_mut().app = Some(app);
         harness.run();

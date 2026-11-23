@@ -36,6 +36,21 @@ mod info_popups {
     use fuzzy_dedupe_platform::open::{Location, OpenHandle, Opener};
     use fuzzy_dedupe_platform::picker::{FolderPicker, PickHandle, PickOutcome, PickRequest};
 
+    /// Step bound for every `Harness::run` here, in place of kittest's
+    /// default of 4.
+    ///
+    /// A result from another thread (engine work, the folder picker, the
+    /// opener) may arrive part-way through a run, and the widgets it draws for
+    /// the first time each ask egui for up to two more frames (`widget_style`).
+    /// On slow CI runners that overran 4 steps (PR #39, "would have settled
+    /// after 6 steps"). 16 covers it with margin. A continuous repaint, from an
+    /// animation or a repaint loop, still exhausts 16, so `run()` keeps
+    /// catching runaway repaints.
+    ///
+    /// Each harness test file under `tests/` declares its own copy, because
+    /// they share no module; keep the copies equal.
+    const SETTLE_STEPS: u64 = 16;
+
     const SPEC: &str = include_str!("../../../docs/specs/canonical/fuzzy-dedupe.md");
     const LICENSE: &str = include_str!("../../../LICENSE");
     const NOTICES: &str = include_str!("../../../THIRD-PARTY-NOTICES.md");
@@ -107,6 +122,7 @@ mod info_popups {
             measure: Box::new(NoMeasurement),
         };
         let mut harness = Harness::builder()
+            .with_max_steps(SETTLE_STEPS)
             .with_size(Vec2::new(1600.0, 960.0))
             .build_ui_state(
                 |ui, slot: &mut Slot| {
