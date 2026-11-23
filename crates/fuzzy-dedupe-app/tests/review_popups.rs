@@ -419,12 +419,12 @@ mod review_popups {
     fn review_popups_unique_lines_and_their_count_come_from_the_c04_measure() {
         let (h, subject) = open_review("lines");
         let aligned = aligned(&h);
-        assert_eq!(aligned.a.file, subject.target, "side A is the target");
+        assert_eq!(aligned.b.file, subject.target, "side B is the target");
 
         // The same §10.1 measure, recomputed from the compared texts.
-        let (only_a, _) = measure_unique(
-            &aligned.a.original.text,
+        let (only_b, _) = measure_unique(
             &aligned.b.original.text,
+            &aligned.a.original.text,
             CompareMode::Original,
             IgnoreOptions {
                 whitespace: false,
@@ -433,8 +433,8 @@ mod review_popups {
                 punctuation: false,
             },
         );
-        assert_eq!(only_a.lines, aligned.only_in_a.lines);
-        let count = aligned.only_in_a.count();
+        assert_eq!(only_b.lines, aligned.only_in_b.lines);
+        let count = aligned.only_in_b.count();
         assert!(count > 0, "the fuzzy row has unique lines");
 
         // The Findings Unique value of the row agrees (one measure, C-04).
@@ -452,8 +452,8 @@ mod review_popups {
             format!("{count} lines exist only in this file.")
         };
         h.get_by_label(&headline);
-        for &line in &aligned.only_in_a.lines {
-            let text = aligned.a.original.line(line).expect("line");
+        for &line in &aligned.only_in_b.lines {
+            let text = aligned.b.original.line(line).expect("line");
             h.get_by_label(&format!("Line {}: {text}", line + 1));
         }
     }
@@ -461,7 +461,7 @@ mod review_popups {
     #[test]
     fn review_popups_copy_unique_lines_places_exactly_the_c04_copy_text() {
         let (mut h, _) = open_review("copy");
-        let expected = aligned(&h).copy_only_in_a().text;
+        let expected = aligned(&h).copy_only_in_b().text;
         assert!(expected.ends_with('\n'));
         h.get_by_role_and_label(Role::Button, "Copy unique lines")
             .click();

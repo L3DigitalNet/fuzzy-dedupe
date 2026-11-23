@@ -190,15 +190,17 @@ mod diff_view {
 
     /// Computes the C-04 comparison of `a` against `b` through the real
     /// engine and returns Compare's state holding it, as `events.rs` fills
-    /// it. File 1 is the target (A), file 2 the counterpart (B).
+    /// it. `a` is file 1, the counterpart, and `b` file 2, the target, so
+    /// the service puts `a` on side A (the left pane) and `b` on side B,
+    /// as the large pair's own roles declare (`Large_A.txt` is the reference).
     fn load(a: &str, b: &str, mode: CompareMode) -> CompareState {
         let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
         let scan = engine.reserve_scan_id();
         let mut scenario = texts::large_pair_scenario(scan, DEFAULT_SEED);
-        let (target, counterpart) = (FileId::new(1), FileId::new(2));
+        let (counterpart, target) = (FileId::new(1), FileId::new(2));
         let mut contents = FixtureContents::default();
-        contents.insert(target, FileContent::Bytes(Arc::from(a.as_bytes())));
-        contents.insert(counterpart, FileContent::Bytes(Arc::from(b.as_bytes())));
+        contents.insert(counterpart, FileContent::Bytes(Arc::from(a.as_bytes())));
+        contents.insert(target, FileContent::Bytes(Arc::from(b.as_bytes())));
         scenario.contents = contents;
         let rules = scenario.results.rules.revision;
         engine
@@ -208,8 +210,8 @@ mod diff_view {
             scan,
             target,
             counterpart,
-            target_snapshot: SnapshotId::new(1),
-            counterpart_snapshot: SnapshotId::new(2),
+            target_snapshot: SnapshotId::new(2),
+            counterpart_snapshot: SnapshotId::new(1),
             rules,
             mode,
         };

@@ -12,10 +12,11 @@
 //!
 //! The pair is the popup's `UniqueTextSubject`: scan, target, counterpart,
 //! both snapshots and the rules revision the review binds to. The unique
-//! lines are the C-04 comparison of exactly that pair, in Original mode
-//! (the Findings Unique measure). The popup shares the one comparison slot
-//! with Compare (`ComparisonSlot` explains why), so `open` asks for its
-//! pair's comparison whenever the slot holds another key.
+//! lines are side B of the C-04 comparison of exactly that pair, the
+//! target's side, in Original mode (the Findings Unique measure). The popup
+//! shares the one comparison slot with Compare (`ComparisonSlot` explains
+//! why), so `open` asks for its pair's comparison whenever the slot holds
+//! another key.
 //!
 //! Queue for cleanup stays enabled. Without the acknowledgment it sends
 //! nothing, shows the `44:4079` prompt under the checkbox and moves focus to
@@ -190,12 +191,12 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
             "The unique lines cannot be shown.".to_owned(),
             "Open the comparison to see why. This file cannot be queued here.".to_owned(),
         ),
-        Evidence::Ready(aligned) => headline(aligned.only_in_a.count(), &counterpart_name),
+        Evidence::Ready(aligned) => headline(aligned.only_in_b.count(), &counterpart_name),
     };
     unmatched(ui, palette, &headline, &consequence);
 
     if let Some(aligned) = ready
-        && !aligned.only_in_a.lines.is_empty()
+        && !aligned.only_in_b.lines.is_empty()
     {
         unique_lines(ui, palette, aligned);
     }
@@ -227,7 +228,7 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
             && let Some(aligned) = ready
         {
             cx.intents
-                .push(UiIntent::CopyText(aligned.copy_only_in_a().text));
+                .push(UiIntent::CopyText(aligned.copy_only_in_b().text));
         }
     });
 
@@ -417,11 +418,12 @@ fn unmatched(ui: &mut egui::Ui, palette: &Palette, headline: &str, consequence: 
 }
 
 /// The target's unique lines in file order, each with its source line
-/// number and the frame's "B" side mark (the target is Compare's pane B;
-/// it is the engine's side A). Virtualized: only the visible rows are laid
-/// out, so a 5 MB target with thousands of unique lines costs a screenful.
+/// number and the frame's "B" side mark. The target is the comparison's
+/// side B, Compare's right pane, so every read here is side B's.
+/// Virtualized: only the visible rows are laid out, so a 5 MB target with
+/// thousands of unique lines costs a screenful.
 fn unique_lines(ui: &mut egui::Ui, palette: &Palette, aligned: &AlignedComparison) {
-    let lines = &aligned.only_in_a.lines;
+    let lines = &aligned.only_in_b.lines;
     egui::Frame::new()
         .fill(palette.color(Token::Code))
         .stroke(Stroke::new(theme::BORDER_WIDTH, palette.color(Token::Line)))
@@ -436,7 +438,7 @@ fn unique_lines(ui: &mut egui::Ui, palette: &Palette, aligned: &AlignedCompariso
                 .auto_shrink([false, true])
                 .show_rows(ui, ROW_HEIGHT, lines.len(), |ui, range| {
                     for &line in &lines[range] {
-                        let source = aligned.a.original.line(line).unwrap_or("");
+                        let source = aligned.b.original.line(line).unwrap_or("");
                         line_row(ui, palette, line + 1, source);
                     }
                 });
