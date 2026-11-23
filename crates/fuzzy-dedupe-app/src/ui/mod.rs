@@ -3,5 +3,36 @@
 
 //! The egui user interface. GUI types stay inside this crate; the engine and
 //! domain never see them (spec §8.5).
+//!
+//! `shell` draws the rail, main menu, toolbar row and status bar and hosts
+//! the two workspaces (`findings`, `compare`); `dialogs` holds the popups and
+//! `widgets` the reusable pieces. Views read presentation state and push
+//! intents; none calls a service while drawing (spec §5.2).
 
+pub mod compare;
+pub mod dialogs;
+pub mod findings;
+pub mod shell;
 pub mod theme;
+pub mod widgets;
+
+use crate::presentation::state::{
+    CompareState, FindingsState, OperationState, PreferencesState, QueueState, ScanState,
+};
+
+/// What a workspace view may read and change while drawing. Dialog state is
+/// absent on purpose: a view requests a popup with an intent.
+pub struct WorkspaceCx<'a> {
+    pub findings: &'a mut FindingsState,
+    pub compare: &'a mut CompareState,
+    pub queue: &'a QueueState,
+    pub scan: &'a ScanState,
+    pub operation: &'a OperationState,
+    /// Mutable so a view records its own view preferences (column widths,
+    /// split, wrap, linked scroll); `app.rs` writes changes through T20's
+    /// `preferences::store`.
+    pub preferences: &'a mut PreferencesState,
+    /// False while a popup or menu is open: the view then reacts to no key,
+    /// so no shortcut reaches it under a popup (spec §11.6).
+    pub input_enabled: bool,
+}
