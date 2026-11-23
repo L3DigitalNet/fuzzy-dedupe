@@ -129,6 +129,51 @@ pub struct FindingsState {
     pub column_widths: BTreeMap<ColumnId, f32>,
     /// Vertical scroll offset of the table body, in units.
     pub scroll_offset: f32,
+    // View state outside the return context (plan T13).
+    /// Optional columns hidden through Actions ▾ → Choose columns….
+    pub hidden_columns: BTreeSet<ColumnId>,
+    /// Short group titles for the File name column of a header row, such
+    /// as the design scenario's "Project plan". A group without one shows
+    /// its reference's file name.
+    pub group_titles: BTreeMap<GroupId, String>,
+    /// The Findings menu this view asked the dialog host to open, mirrored
+    /// here because [`crate::ui::WorkspaceCx`] carries no dialog state; see
+    /// [`FindingsMenu`] for when the mirror is trusted.
+    pub menu: Option<FindingsMenu>,
+    /// The discovery-problem list (frame 01c) is expanded.
+    pub show_issues: bool,
+    /// The group of Compare's current pair, whose header reads "Last
+    /// compared"; copied from `CompareState` by the view each frame.
+    pub last_compared: Option<GroupId>,
+    /// The focused row moved by keyboard; the table scrolls it into view on
+    /// its next draw.
+    pub reveal_focus: bool,
+    /// The visible-row projection, rebuilt only when its inputs change
+    /// (spec §11.9), never per frame.
+    pub projection: Option<Arc<crate::presentation::projections::FindingsProjection>>,
+}
+
+/// A Findings menu (Actions ▾, Sort ▾ or a row menu) as the view requested
+/// it from the dialog host.
+///
+/// The dialog host owns the single overlay slot, but the view only learns
+/// whether *some* overlay is open (`input_enabled`). The view therefore
+/// records the menu it asked for and draws it only while an overlay is open
+/// and no modal popup is; the record is dropped the first frame input is
+/// enabled again, which is how an Esc or a dispatch-side close reaches it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FindingsMenu {
+    pub kind: MenuKind,
+    /// The menu's top-left corner, in units.
+    pub anchor: egui::Pos2,
+    /// The egui pass that requested it. Input is still enabled in that
+    /// pass (the open is dispatched after it), so only a later pass with
+    /// input enabled means the menu was closed.
+    pub opened_pass: u64,
+    /// The menu has not drawn yet: its first item takes keyboard focus.
+    pub fresh: bool,
+    /// Choose columns… is expanded inside Actions ▾.
+    pub choosing_columns: bool,
 }
 
 /// A text position inside one Compare pane: an aligned row and a character
@@ -530,6 +575,20 @@ impl QueueState {
     #[must_use]
     pub fn snapshot(&self, file: FileId) -> Option<SnapshotId> {
         self.view.as_ref()?.snapshots.get(&file).copied()
+    }
+
+    #[must_use]
+    pub fn is_queued(&self, file: FileId) -> bool {
+        self.entries.contains_key(&file)
+    }
+
+    /// Whether no route may queue `file` per the engine's published view.
+    #[must_use]
+    pub fn is_protected(&self, file: FileId) -> bool {
+        self.view
+            .as_ref()
+            .is_some_and(|view| view.is_protected(file))
+            || self.decisions.get(&file) == Some(&MemberDecision::Protected)
     }
 }
 
