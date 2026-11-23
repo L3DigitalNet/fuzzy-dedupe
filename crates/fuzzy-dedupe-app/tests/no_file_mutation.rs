@@ -49,10 +49,19 @@
 //!   spelling, or uses an escape or multi-line string in a lint table;
 //! - a manifest or `Cargo.lock` names a package containing `trash`;
 //! - a `REUSE.toml` annotation glob matches `clippy.toml`;
+//! - scoped source nests brackets deeper than `MAX_SCAN_NESTING`, has a
+//!   `use` tree that flattens past `MAX_USE_SEGMENTS` segments, or has a
+//!   `use` declaration holding a token no use tree contains; the scan
+//!   cannot judge such text in bounded time, so it rejects it (fail closed);
 //! - a scoped tree (`crates/*/src`, `crates/*/tests`) contains a symbolic
 //!   link, a scope boundary (a crate directory, its `Cargo.toml`, `src/` or
 //!   `tests/`, or the root `Cargo.toml`) is one, or the crate directories
 //!   differ from the root `[workspace] members`.
+//!
+//! Every pass over a file's tokens is linear in their count on any input,
+//! including malformed and generated source: bracket pairs come from one
+//! table the lexer builds, and per-token range lookups use masks. A regression
+//! fails the bounded-time tests at their deadline instead of hanging CI.
 //!
 //! Lexing, not parsing: comments and string, byte-string, raw-string and char
 //! literals are dropped and the rest becomes identifier and punctuation
@@ -84,6 +93,10 @@
 //! - `build.rs`, `examples/` and `benches/` are outside C-09's named scope.
 //! - A crate-local module named `fs` or `process` is treated as the std one,
 //!   a deliberate false positive.
+//! - Macro expansion is not resolved: a macro that assembles a declaration
+//!   from fragments (`(use <$root:ident as $alias:ident>) => { … }`) is
+//!   outside the threat model; a `use` inside `(…)` or `[…]` is judged as a
+//!   tree but is not a declaration.
 //!
 //! Requirements: run from inside the workspace checkout (the workspace root
 //! is `CARGO_MANIFEST_DIR/../..`), with `clippy.toml`, `Cargo.toml`,
@@ -147,6 +160,9 @@ const RULE_MEMBERS: &str = "workspace-members";
 const RULE_CFG_ATTR: &str = "cfg-attr";
 const RULE_MACRO_PATH: &str = "macro-built-path";
 const RULE_TYPE_ALIAS: &str = "type-alias";
+const RULE_NESTING: &str = "too-deeply-nested-to-scan";
+const RULE_USE_SIZE: &str = "use-tree-too-large-to-scan";
+const RULE_USE_PARSE: &str = "unparseable-use-declaration";
 
 // ── C-09 rule data ─────────────────────────────────────────────────────────
 
@@ -323,19 +339,43 @@ const ALLOWLIST: &[Allowed] = &[
 
 // ── Lexer ──────────────────────────────────────────────────────────────────
 
+// Bracket nesting (all three kinds together) past which a file is reported
+// under `RULE_NESTING` and not scanned further. The workspace peaks near 13;
+// the bound is what keeps every per-level pass linear in the token count, and
+// the recursive cfg evaluator off the end of its stack, on generated input.
+const MAX_SCAN_NESTING: usize = 64;
+
+// Segments one `use` declaration may flatten to before it is reported under
+// `RULE_USE_SIZE`. Each leaf copies its shared prefix, so a long prefix over
+// many members is quadratic without a cap; real declarations flatten to a
+// few dozen.
+const MAX_USE_SEGMENTS: usize = 4096;
+
+// `Token::pair` of a token that is not a bracket, or of a stray closer.
+const NO_PAIR: usize = usize::MAX;
+
 #[derive(Debug)]
 struct Token {
     text: String,
     line: usize,
     ident: bool,
+    // For an opener, the index of its closer (the last token when it never
+    // closes); for a closer, its opener. Each bracket kind pairs on its own,
+    // exactly as a same-kind depth count does.
+    pair: usize,
+    // The innermost unclosed bracket around this token is `(` or `[`, so it
+    // sits in an expression, attribute or macro argument, not at item level.
+    grouped: bool,
 }
 
 /// Lexer output: the tokens, plus the raw text of every string-like
 /// literal, each with the number of tokens before it, which only the
-/// `CARGO_TARGET_TMPDIR` proxy reads.
+/// `CARGO_TARGET_TMPDIR` proxy reads, and the line where bracket nesting
+/// first exceeds `MAX_SCAN_NESTING`, if it does.
 struct Lexed {
     tokens: Vec<Token>,
     strings: Vec<(usize, String)>,
+    too_deep: Option<usize>,
 }
 
 /// Tokenize Rust source into identifiers and punctuation, dropping comments,
@@ -356,7 +396,13 @@ fn lex(src: &str) -> Lexed {
     let mut i = 0;
     while i < c.len() {
         let ch = c[i];
-        let token = move |text: String, ident: bool| Token { text, line, ident };
+        let token = move |text: String, ident: bool| Token {
+            text,
+            line,
+            ident,
+            pair: NO_PAIR,
+            grouped: false,
+        };
         if let Some(end) = skipped_end(&c, i) {
             // Comments and literals vanish, but their newlines still count.
             let end = end.min(c.len());
@@ -403,10 +449,44 @@ fn lex(src: &str) -> Lexed {
             i += 1;
         }
     }
+    let too_deep = pair_brackets(&mut out);
     Lexed {
         tokens: out,
         strings,
+        too_deep,
     }
+}
+
+/// Fill `Token::pair` and `Token::grouped` in one pass, and return the line
+/// where nesting first exceeds `MAX_SCAN_NESTING`. Every later bracket lookup
+/// reads this table: rescanning for a closer per lookup was quadratic on
+/// nested input (T32).
+fn pair_brackets(t: &mut [Token]) -> Option<usize> {
+    const KINDS: [(&str, &str); 3] = [("(", ")"), ("[", "]"), ("{", "}")];
+    let mut open: [Vec<usize>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut too_deep = None;
+    for k in 0..t.len() {
+        // The innermost unclosed opener is the latest top of the three stacks.
+        let innermost = (0..3).filter_map(|i| open[i].last().map(|&o| (o, i))).max();
+        t[k].grouped = innermost.is_some_and(|(_, i)| i < 2);
+        let text = t[k].text.as_str();
+        if let Some(i) = KINDS.iter().position(|(o, _)| *o == text) {
+            open[i].push(k);
+            if too_deep.is_none() && open.iter().map(Vec::len).sum::<usize>() > MAX_SCAN_NESTING {
+                too_deep = Some(t[k].line);
+            }
+        } else if let Some(i) = KINDS.iter().position(|(_, c)| *c == text)
+            && let Some(o) = open[i].pop()
+        {
+            t[o].pair = k;
+            t[k].pair = o;
+        }
+    }
+    let last = t.len().saturating_sub(1);
+    for o in open.into_iter().flatten() {
+        t[o].pair = last;
+    }
+    too_deep
 }
 
 fn is_ident_start(ch: char) -> bool {
@@ -490,11 +570,14 @@ fn raw_string_end(c: &[char], i: usize) -> Option<usize> {
     }
     j += 1;
     while j < c.len() {
+        // `take_while`, not a filtered `take(hashes)`: each quote then costs
+        // only the `#` run after it, so a raw string full of quotes stays
+        // linear.
         if c[j] == '"'
             && c[j + 1..]
                 .iter()
                 .take(hashes)
-                .filter(|&&ch| ch == '#')
+                .take_while(|&&ch| ch == '#')
                 .count()
                 == hashes
         {
@@ -505,25 +588,15 @@ fn raw_string_end(c: &[char], i: usize) -> Option<usize> {
     Some(c.len())
 }
 
-/// Return the index of the token closing the group opened at `open`.
+/// Return the index of the token closing the group opened at `open`, or the
+/// last token when it never closes. `open` must be an opening bracket.
 fn matching_close(t: &[Token], open: usize) -> usize {
-    let (o, cl) = match t[open].text.as_str() {
-        "(" => ("(", ")"),
-        "[" => ("[", "]"),
-        _ => ("{", "}"),
-    };
-    let mut depth = 0usize;
-    for (k, tok) in t.iter().enumerate().skip(open) {
-        if tok.text == o {
-            depth += 1;
-        } else if tok.text == cl {
-            depth -= 1;
-            if depth == 0 {
-                return k;
-            }
-        }
-    }
-    t.len() - 1
+    t[open].pair.min(t.len() - 1)
+}
+
+/// The opener matching the closer at `close`, if it has one.
+fn matching_open(t: &[Token], close: usize) -> Option<usize> {
+    Some(t[close].pair).filter(|&p| p != NO_PAIR && p < close)
 }
 
 // ── Rust source scan ───────────────────────────────────────────────────────
@@ -650,7 +723,7 @@ fn attributes(t: &[Token]) -> Vec<Attr> {
 fn outer_attrs_before<'a>(t: &[Token], attrs: &'a [Attr], item: usize) -> (usize, Vec<&'a Attr>) {
     let mut first = item;
     if first > 0 && t[first - 1].text == ")" {
-        if let Some(p) = (0..first - 1).rev().find(|&p| t[p].text == "(")
+        if let Some(p) = matching_open(t, first - 1)
             && p > 0
             && t[p - 1].text == "pub"
         {
@@ -659,10 +732,15 @@ fn outer_attrs_before<'a>(t: &[Token], attrs: &'a [Attr], item: usize) -> (usize
     } else if first > 0 && t[first - 1].text == "pub" {
         first -= 1;
     }
+    // `attributes` never overlaps two attributes, so their ends ascend and a
+    // binary search finds the one ending just above `first`.
     let mut found = Vec::new();
-    while let Some(a) = attrs.iter().find(|a| !a.inner && a.end + 1 == first) {
-        found.push(a);
-        first = a.start;
+    while first > 0
+        && let Ok(i) = attrs.binary_search_by_key(&(first - 1), |a| a.end)
+        && !attrs[i].inner
+    {
+        found.push(&attrs[i]);
+        first = attrs[i].start;
     }
     (first, found)
 }
@@ -675,6 +753,26 @@ struct InlineMod {
     open: usize,
     close: usize,
     outer_test: bool,
+}
+
+/// For every token, the index into `mods` of the innermost inline module
+/// whose braces strictly enclose it. Brace pairs nest, so one sweep with a
+/// stack replaces a search over every module per lookup.
+fn innermost_mods(len: usize, mods: &[InlineMod]) -> Vec<Option<usize>> {
+    let mut out = vec![None; len];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next = 0;
+    for (k, slot) in out.iter_mut().enumerate() {
+        while stack.last().is_some_and(|&j| mods[j].close <= k) {
+            stack.pop();
+        }
+        *slot = stack.last().copied();
+        while next < mods.len() && mods[next].open == k {
+            stack.push(next);
+            next += 1;
+        }
+    }
+    out
 }
 
 fn inline_mods(t: &[Token], attrs: &[Attr]) -> Vec<InlineMod> {
@@ -715,12 +813,9 @@ fn test_regions(
         .filter(|m| m.outer_test)
         .map(|m| (m.first, m.close))
         .collect();
+    let innermost = innermost_mods(t.len(), mods);
     for a in attrs.iter().filter(|a| a.inner && a.is_cfg_test(t)) {
-        let innermost = mods
-            .iter()
-            .filter(|m| m.open < a.start && a.start < m.close)
-            .min_by_key(|m| m.close - m.open);
-        out.push(innermost.map_or(whole, |m| (m.first, m.close)));
+        out.push(innermost[a.start].map_or(whole, |j| (mods[j].first, mods[j].close)));
     }
     if file_is_test {
         out.push(whole);
@@ -728,8 +823,26 @@ fn test_regions(
     out
 }
 
-fn in_regions(regions: &[(usize, usize)], k: usize) -> bool {
-    regions.iter().any(|&(s, e)| k >= s && k <= e)
+/// Mark every token inside any of the inclusive `ranges`, through a
+/// difference array, so nested or numerous ranges cost O(tokens + ranges).
+/// Rejected: a per-token search of the ranges, quadratic on a file with many
+/// test modules or `use` declarations.
+fn range_mask(len: usize, ranges: &[(usize, usize)]) -> Vec<bool> {
+    let mut delta = vec![0i64; len + 1];
+    for &(s, e) in ranges {
+        if s < len {
+            delta[s] += 1;
+            delta[e.min(len - 1) + 1] -= 1;
+        }
+    }
+    let mut depth = 0;
+    delta[..len]
+        .iter()
+        .map(|d| {
+            depth += d;
+            depth > 0
+        })
+        .collect()
 }
 
 /// One lint reference inside an attribute, with its level.
@@ -747,8 +860,15 @@ struct LintRef {
 /// attribute, attributed to its nearest enclosing lint-level call. Scanning
 /// the whole attribute, not just its head, is what catches
 /// `cfg_attr(test, allow(…))`.
-fn lint_refs(t: &[Token], attrs: &[Attr], regions: &[(usize, usize)]) -> Vec<LintRef> {
+fn lint_refs(t: &[Token], attrs: &[Attr], in_test: &[bool]) -> Vec<LintRef> {
     let levels = ["allow", "expect", "warn", "deny", "forbid"];
+    // Prefix counts of `reason` identifiers: `reasons[j]` counts those
+    // before token `j`, so each reference's check is O(1), not a rescan of
+    // its whole lint call.
+    let mut reasons = vec![0usize; t.len() + 1];
+    for (k, tok) in t.iter().enumerate() {
+        reasons[k + 1] = reasons[k] + usize::from(tok.ident && tok.text == "reason");
+    }
     let mut out = Vec::new();
     for a in attrs {
         let mut stack: Vec<(String, usize)> = Vec::new();
@@ -783,9 +903,9 @@ fn lint_refs(t: &[Token], attrs: &[Attr], regions: &[(usize, usize)]) -> Vec<Lin
                     line: tok.line,
                     level: level.clone(),
                     lint,
-                    has_reason: t[k..=*close].iter().any(|x| x.ident && x.text == "reason"),
+                    has_reason: reasons[*close + 1] > reasons[k],
                     inner: a.inner,
-                    in_test_module: in_regions(regions, a.start),
+                    in_test_module: in_test[a.start],
                     attr_end: a.end,
                 });
             }
@@ -801,64 +921,86 @@ struct UseLeaf {
     glob: bool,
 }
 
-fn parse_use_tree(
-    t: &[Token],
-    pos: &mut usize,
-    end: usize,
-    prefix: &[String],
-    out: &mut Vec<UseLeaf>,
-) {
-    let mut segs = prefix.to_vec();
-    while *pos < end {
-        let tok = &t[*pos];
+/// Flatten every use tree in `t[start..end]`, one `UseLeaf` per path, and
+/// return `false` once the leaves would copy more than `MAX_USE_SEGMENTS`
+/// segments, leaving `out` partial.
+///
+/// An explicit stack of open `{` groups replaces recursion, so nesting depth
+/// costs no call stack, and every iteration consumes at least one token: the
+/// pass is linear in `end - start` on any input. A group's `}` closes the
+/// innermost open group, and a stray `}` or `,` only ends the current path,
+/// so malformed input ends the scan instead of revisiting one token forever
+/// (T32).
+fn parse_use_trees(t: &[Token], start: usize, end: usize, out: &mut Vec<UseLeaf>) -> bool {
+    let mut copied = 0usize;
+    let mut segs: Vec<String> = Vec::new();
+    // `segs.len()` at each open `{`: the prefix its member paths share.
+    let mut groups: Vec<usize> = Vec::new();
+    // A path has begun since the last `,`, `{` or completed leaf, so a
+    // separator or the range end must emit it as a plain leaf.
+    let mut in_path = false;
+    let mut pos = start;
+    while pos < end {
+        let tok = &t[pos];
+        let mut done = None;
         match tok.text.as_str() {
-            "::" => *pos += 1,
-            "*" => {
-                *pos += 1;
-                out.push(UseLeaf {
-                    segs,
-                    alias: false,
-                    glob: true,
-                });
-                return;
+            "," | "}" => {
+                if in_path {
+                    done = Some((false, false));
+                }
+                if tok.text == "}" {
+                    groups.pop();
+                }
+                pos += 1;
             }
             "{" => {
-                let close = matching_close(t, *pos);
-                *pos += 1;
-                while *pos < close {
-                    if t[*pos].text == "," {
-                        *pos += 1;
-                    } else {
-                        parse_use_tree(t, pos, close, &segs, out);
-                    }
-                }
-                *pos = close + 1;
-                return;
+                groups.push(segs.len());
+                in_path = false;
+                pos += 1;
+            }
+            "*" => {
+                done = Some((false, true));
+                pos += 1;
             }
             "as" => {
-                *pos += 2;
-                out.push(UseLeaf {
-                    segs,
-                    alias: true,
-                    glob: false,
-                });
-                return;
+                done = Some((true, false));
+                pos += 2;
             }
-            "," | "}" => break,
-            _ if tok.ident => {
-                if tok.text != "self" {
+            _ => {
+                if tok.ident && tok.text != "self" {
                     segs.push(tok.text.clone());
                 }
-                *pos += 1;
+                in_path = true;
+                pos += 1;
             }
-            _ => *pos += 1,
+        }
+        if let Some((alias, glob)) = done {
+            copied += segs.len();
+            if copied > MAX_USE_SEGMENTS {
+                return false;
+            }
+            out.push(UseLeaf {
+                segs: segs.clone(),
+                alias,
+                glob,
+            });
+            in_path = false;
+        }
+        if !in_path {
+            segs.truncate(groups.last().copied().unwrap_or(0));
         }
     }
-    out.push(UseLeaf {
-        segs,
-        alias: false,
-        glob: false,
-    });
+    if in_path {
+        if copied + segs.len() > MAX_USE_SEGMENTS {
+            return false;
+        }
+        out.push(UseLeaf {
+            segs,
+            alias: false,
+            glob: false,
+        });
+    }
+    true
 }
 
 /// A disallowed route reached by source, before allowlist filtering.
@@ -934,8 +1076,29 @@ fn judge_use_leaf(leaf: &UseLeaf, is_pub: bool) -> Option<(String, Option<&'stat
     Some((detail, name))
 }
 
+/// Whether the token at `k` is the `use` keyword in its declaration role.
+/// Rust admits the keyword in exactly two roles, a declaration and a
+/// precise-capturing bound (`impl Trait + use<'a>`, `use<>`), and only the
+/// bound is followed by `<`. Rejected: a whitelist of preceding tokens (`;`,
+/// `{`, `}`, `]`, `pub`, …), which would silently skip a declaration after
+/// any token it forgot.
+fn is_use_keyword(t: &[Token], k: usize) -> bool {
+    t[k].ident && t[k].text == "use" && t.get(k + 1).is_none_or(|x| x.text != "<")
+}
+
+/// Whether `tok` can occur inside a use tree. `$` admits macro fragments
+/// (`use $crate::x;`, `use $p;`); the `use` keyword never occurs inside one.
+fn in_use_grammar(tok: &Token) -> bool {
+    (tok.ident && tok.text != "use")
+        || matches!(tok.text.as_str(), "::" | "{" | "}" | "," | "*" | "$")
+}
+
 /// Collect `use`-tree and `extern crate … as` hits, and return the token
-/// ranges of every `use` statement so the qualified-path pass skips them.
+/// ranges of every `use` declaration so the qualified-path pass skips them.
+///
+/// Ranges are inclusive, ascending and disjoint: each ends before the next
+/// `use` keyword, so the range scans, `range_mask` and the callers stay
+/// linear in the token count.
 fn use_hits(t: &[Token], hits: &mut Vec<Hit>) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     for (k, tok) in t.iter().enumerate() {
@@ -950,36 +1113,79 @@ fn use_hits(t: &[Token], hits: &mut Vec<Hit>) -> Vec<(usize, usize)> {
                 });
             }
         }
-        if !(tok.ident && tok.text == "use") {
+        if !is_use_keyword(t, k) {
             continue;
         }
+        // A `use` whose innermost bracket is `(` or `[` sits in an attribute,
+        // expression or macro argument, never at item level, so it is no
+        // declaration: it masks nothing from `path_hits` (an attribute's
+        // `#[cfg_attr(any(), deprecated(use))]` would otherwise mask the
+        // whole function after it) and
+        // owes the grammar nothing. Its tree is still judged, because a
+        // macro may expand it into a declaration (fail closed).
+        let decl = !tok.grouped;
         let mut is_pub = k > 0 && t[k - 1].text == "pub";
-        if k > 0
-            && t[k - 1].text == ")"
-            && let Some(p) = (0..k - 1).rev().find(|&p| t[p].text == "(")
-        {
-            is_pub = p > 0 && t[p - 1].text == "pub";
+        if k > 0 && t[k - 1].text == ")" {
+            is_pub = matching_open(t, k - 1).is_some_and(|p| p > 0 && t[p - 1].text == "pub");
         }
+        // A declaration ends at its `;`, at the `}` closing the block that
+        // encloses it, before the next `use` keyword, or before the first
+        // token no use tree contains. Each bound is load-bearing: without the
+        // `}` bound a declaration lacking its `;` (as in a macro body) would
+        // swallow the rest of the enclosing item and hide function bodies
+        // from `path_hits`; without the `use` bound, `use use …` would make
+        // the ranges overlap and the scan quadratic; without the grammar
+        // bound, any stray token would extend the mask over code. None of
+        // them shortens a valid declaration.
         let mut end = k + 1;
-        let mut depth = 0i32;
+        let mut depth = 0usize;
+        let mut terminated = false;
+        let mut stray = None;
         while end < t.len() {
-            match t[end].text.as_str() {
+            let x = &t[end];
+            match x.text.as_str() {
                 "{" => depth += 1,
+                "}" if depth == 0 => break,
                 "}" => depth -= 1,
-                ";" if depth <= 0 => break,
+                ";" if depth == 0 => {
+                    terminated = true;
+                    break;
+                }
+                "use" if x.ident => break,
+                _ if !in_use_grammar(x) => {
+                    stray = Some(end);
+                    break;
+                }
                 _ => {}
             }
             end += 1;
         }
-        ranges.push((k, end));
-        let mut leaves = Vec::new();
-        let mut pos = k + 1;
-        while pos < end {
-            if t[pos].text == "," {
-                pos += 1;
-            } else {
-                parse_use_tree(t, &mut pos, end, &[], &mut leaves);
+        if decl {
+            ranges.push((k, if terminated { end } else { end - 1 }));
+            // Fail closed: the scan cannot tell where such a declaration
+            // was meant to end, or what it imports.
+            if let Some(j) = stray {
+                hits.push(Hit {
+                    token: k,
+                    rule: RULE_USE_PARSE,
+                    name: None,
+                    detail: format!(
+                        "`use` declaration reaches `{}`, which no use tree contains",
+                        t[j].text
+                    ),
+                });
             }
+        }
+        let mut leaves = Vec::new();
+        if !parse_use_trees(t, k + 1, end, &mut leaves) {
+            hits.push(Hit {
+                token: k,
+                rule: RULE_USE_SIZE,
+                name: None,
+                detail: format!(
+                    "`use` tree flattens to more than {MAX_USE_SEGMENTS} path segments"
+                ),
+            });
         }
         for leaf in &leaves {
             if let Some((detail, name)) = judge_use_leaf(leaf, is_pub) {
@@ -1052,8 +1258,9 @@ fn check_lint_refs(
 /// Collect qualified-path and method-form hits outside `use` statements,
 /// which `use_hits` already covers.
 fn path_hits(t: &[Token], use_ranges: &[(usize, usize)], hits: &mut Vec<Hit>) {
+    let in_use = range_mask(t.len(), use_ranges);
     for k in 0..t.len().saturating_sub(2) {
-        if in_regions(use_ranges, k) {
+        if in_use[k] {
             continue;
         }
         let (a, sep, b) = (&t[k], &t[k + 1], &t[k + 2]);
@@ -1154,12 +1361,53 @@ fn structural_findings(
         ));
     }
     test_copy_findings(path, t, out);
+    let idx = TmpdirIndex::new(lexed);
     for r in refs
         .iter()
         .filter(|r| r.level == "expect" && r.lint == LINT_METHODS)
     {
-        if !item_names_tmpdir(lexed, r.attr_end) {
+        if !item_names_tmpdir(t, &idx, r.attr_end) {
             out.push(finding(path, r.line, RULE_TEST_TMPDIR, "a `disallowed_methods` allowance in a test file must build its fixtures under `CARGO_TARGET_TMPDIR`, which the allowed item's body never names"));
+        }
+    }
+}
+
+/// Per-file lookup tables for `item_names_tmpdir`, built once so that many
+/// allowances, or many attributes on one item, never rescan the file.
+struct TmpdirIndex {
+    // The first `{` or `;` at or after each token (`len` when none).
+    body_start: Vec<usize>,
+    // `idents[j]`: `CARGO_TARGET_TMPDIR` identifiers before token `j`.
+    idents: Vec<usize>,
+    // Ascending token positions of string literals naming the directory.
+    strings: Vec<usize>,
+}
+
+impl TmpdirIndex {
+    fn new(lexed: &Lexed) -> Self {
+        let t = &lexed.tokens;
+        let mut body_start = vec![t.len(); t.len() + 1];
+        for k in (0..t.len()).rev() {
+            body_start[k] = if matches!(t[k].text.as_str(), "{" | ";") {
+                k
+            } else {
+                body_start[k + 1]
+            };
+        }
+        let mut idents = vec![0usize; t.len() + 1];
+        for (k, tok) in t.iter().enumerate() {
+            idents[k + 1] = idents[k] + usize::from(tok.text == "CARGO_TARGET_TMPDIR");
+        }
+        let strings = lexed
+            .strings
+            .iter()
+            .filter(|(_, s)| s.contains("CARGO_TARGET_TMPDIR"))
+            .map(|(at, _)| *at)
+            .collect();
+        TmpdirIndex {
+            body_start,
+            idents,
+            strings,
         }
     }
 }
@@ -1169,21 +1417,15 @@ fn structural_findings(
 /// or as an identifier. The attribute's own `reason` and the rest of the
 /// file do not count (round-3 item F6). This proves the item names the
 /// directory, not that every write lands inside it.
-fn item_names_tmpdir(lexed: &Lexed, attr_end: usize) -> bool {
-    let t = &lexed.tokens;
-    let mut k = attr_end + 1;
-    while k < t.len() && t[k].text != "{" && t[k].text != ";" {
-        k += 1;
-    }
+fn item_names_tmpdir(t: &[Token], idx: &TmpdirIndex, attr_end: usize) -> bool {
+    let k = idx.body_start[(attr_end + 1).min(t.len())];
     if t.get(k).is_none_or(|x| x.text != "{") {
         return false;
     }
     let close = matching_close(t, k);
-    t[k..=close].iter().any(|x| x.text == "CARGO_TARGET_TMPDIR")
-        || lexed
-            .strings
-            .iter()
-            .any(|(at, s)| *at > k && *at <= close && s.contains("CARGO_TARGET_TMPDIR"))
+    let first_string = idx.strings.partition_point(|&at| at <= k);
+    idx.idents[close + 1] > idx.idents[k]
+        || idx.strings.get(first_string).is_some_and(|&at| at <= close)
 }
 
 /// The filesystem copy forms a test file may not use: `fs::copy` and any
@@ -1192,9 +1434,9 @@ fn item_names_tmpdir(lexed: &Lexed, attr_end: usize) -> bool {
 fn test_copy_findings(path: &str, t: &[Token], out: &mut Vec<Finding>) {
     let mut hits = Vec::new();
     let use_ranges = use_hits(t, &mut hits);
-    let in_use = |k: usize| in_regions(&use_ranges, k);
+    let in_use = range_mask(t.len(), &use_ranges);
     for k in 0..t.len().saturating_sub(2) {
-        if !in_use(k) && t[k].text == "fs" && t[k + 1].text == "::" && t[k + 2].text == "copy" {
+        if !in_use[k] && t[k].text == "fs" && t[k + 1].text == "::" && t[k + 2].text == "copy" {
             out.push(finding(path, t[k].line, RULE_TEST_NAME, "`fs::copy` in an integration test; tests may only write and create fixtures (C-09)"));
         }
     }
@@ -1285,8 +1527,10 @@ fn guarded_path_findings(
             ));
         }
         if tok.ident && tok.text == "type" && t.get(k + 1).is_some_and(|x| x.ident) {
-            let end = (k..t.len())
-                .find(|&j| t[j].text == ";")
+            // Also stop at the next `type`, which no alias contains, so the
+            // searches of `type A type B …` never overlap and stay linear.
+            let end = (k + 1..t.len())
+                .find(|&j| t[j].text == ";" || (t[j].ident && t[j].text == "type"))
                 .unwrap_or(t.len() - 1);
             let rhs_start = (k..end).find(|&j| t[j].text == "=");
             let through = rhs_start.is_some_and(|r| {
@@ -1345,10 +1589,21 @@ fn scan_rust_with(path: &str, src: &str, ctx: &ScanCtx<'_>) -> Vec<Finding> {
         return Vec::new();
     };
     let lexed = lex(src);
+    // Fail closed: past the bound the per-level passes below are no longer
+    // linear and the cfg evaluator recurses without limit, so the file is
+    // reported, not scanned.
+    if let Some(line) = lexed.too_deep {
+        return vec![finding(
+            path,
+            line,
+            RULE_NESTING,
+            format!("brackets nest deeper than {MAX_SCAN_NESTING} levels"),
+        )];
+    }
     let t = &lexed.tokens;
     let attrs = attributes(t);
     let mods = inline_mods(t, &attrs);
-    let regions = test_regions(t, &attrs, &mods, file_is_test);
+    let regions = range_mask(t.len(), &test_regions(t, &attrs, &mods, file_is_test));
     let refs = lint_refs(t, &attrs, &regions);
     let mut out = Vec::new();
 
@@ -1376,16 +1631,14 @@ fn scan_rust_with(path: &str, src: &str, ctx: &ScanCtx<'_>) -> Vec<Finding> {
     // are what keep a second route out of that item. Rejected: requiring the
     // `expect` to precede the hit, which wrongly rejects a file-top `use` of
     // a permitted item. Everything else is a finding.
-    let has_expect = |a: &Allowed| {
+    let has_expect = allowed.is_some_and(|a| {
         refs.iter()
             .any(|r| r.level == "expect" && r.lint == a.lint && !r.inner && !r.in_test_module)
-    };
+    });
     let mut seen = BTreeSet::new();
     for h in hits {
         let permitted = allowed.is_some_and(|a| {
-            h.name.is_some_and(|n| a.names.contains(&n))
-                && !in_regions(&regions, h.token)
-                && has_expect(a)
+            h.name.is_some_and(|n| a.names.contains(&n)) && !regions[h.token] && has_expect
         });
         let line = t[h.token].line;
         if !permitted && seen.insert((line, h.rule, h.detail.clone())) {
@@ -1430,15 +1683,21 @@ fn module_tree(sources: &BTreeMap<String, String>) -> ModuleTree {
     let mut edges: Vec<(String, String, bool)> = Vec::new();
     let mut test_files = BTreeSet::new();
     for (path, src) in sources {
-        let t = lex(src).tokens;
+        let lexed = lex(src);
+        // `scan_rust_with` reports a file past `MAX_SCAN_NESTING`; its
+        // modules are not resolved, so its children read as ordinary code.
+        if lexed.too_deep.is_some() {
+            continue;
+        }
+        let t = lexed.tokens;
         let attrs = attributes(&t);
         let mods = inline_mods(&t, &attrs);
-        let regions = test_regions(&t, &attrs, &mods, false);
-        if attrs.iter().any(|a| {
-            a.inner
-                && a.is_cfg_test(&t)
-                && !mods.iter().any(|m| m.open < a.start && a.start < m.close)
-        }) {
+        let regions = range_mask(t.len(), &test_regions(&t, &attrs, &mods, false));
+        let innermost = innermost_mods(t.len(), &mods);
+        if attrs
+            .iter()
+            .any(|a| a.inner && a.is_cfg_test(&t) && innermost[a.start].is_none())
+        {
             test_files.insert(path.clone());
         }
         for (k, tok) in t.iter().enumerate() {
@@ -1457,15 +1716,20 @@ fn module_tree(sources: &BTreeMap<String, String>) -> ModuleTree {
             if outer.iter().any(|a| a.head(&t) == Some("path")) {
                 continue;
             }
+            // Innermost-out through each module's own enclosing module; the
+            // chain is at most `MAX_SCAN_NESTING` long.
+            let mut chain = Vec::new();
+            let mut at = innermost[k];
+            while let Some(j) = at {
+                chain.push(mods[j].name.as_str());
+                at = innermost[mods[j].open];
+            }
             let mut dir = child_dir(path);
-            let mut enclosing: Vec<&InlineMod> =
-                mods.iter().filter(|m| m.open < k && k < m.close).collect();
-            enclosing.sort_by_key(|m| m.open);
-            for m in enclosing {
-                dir = format!("{dir}/{}", m.name);
+            for name in chain.iter().rev() {
+                dir = format!("{dir}/{name}");
             }
             let candidates = [format!("{dir}/{name}.rs"), format!("{dir}/{name}/mod.rs")];
-            let is_test = outer.iter().any(|a| a.is_cfg_test(&t)) || in_regions(&regions, k);
+            let is_test = outer.iter().any(|a| a.is_cfg_test(&t)) || regions[k];
             match candidates.iter().find(|c| sources.contains_key(*c)) {
                 Some(child) => edges.push((path.clone(), child.clone(), is_test)),
                 None => findings.push(finding(
@@ -3182,5 +3446,321 @@ fn h(p: &std::path::Path) -> std::io::Result<String> { let _ = File::open(p)?; f
             &scan_rust(APP_FILES, "use std::fs::File as F;"),
             RULE_USE_TREE,
         );
+    }
+
+    // ── Bounded-time scan (T32) ────────────────────────────────────────────
+
+    // Generous for a debug build of a linear scan, yet short enough that a
+    // regression fails this test instead of hanging the CI `test` job, as
+    // T3's scan did on `+ use<'a>` (killed after 180 s in T18).
+    const SCAN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Scan `src` on a worker thread and fail if it has not finished by
+    /// `SCAN_DEADLINE`. A worker that never ends is left running: nextest
+    /// runs each test in its own process, which exits with the failure.
+    #[track_caller]
+    fn scan_within_deadline(path: &'static str, src: String) -> Vec<Finding> {
+        let what = format!("scan of a {} KiB fixture as {path}", src.len() / 1024);
+        within_deadline(&what, move || scan_rust(path, &src))
+    }
+
+    #[track_caller]
+    fn within_deadline<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        match rx.recv_timeout(SCAN_DEADLINE) {
+            Ok(v) => v,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                "{what} did not finish within {SCAN_DEADLINE:?}: a scan loop is superlinear \
+                 or stopped consuming tokens"
+            ),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("{what} panicked on its worker thread")
+            }
+        }
+    }
+
+    /// `n` copies of `unit`, for the generated adversarial fixtures.
+    fn repeat(unit: &str, n: usize) -> String {
+        unit.repeat(n)
+    }
+
+    #[test]
+    fn precise_capturing_in_impl_block_terminates() {
+        let src = "struct S(Vec<u8>);\nimpl S {\n    fn bytes<'a>(&'a self) -> impl Iterator<Item = u8> + use<'a> {\n        self.0.iter().copied()\n    }\n    fn none() -> impl Sized + use<> {}\n}\nconst X: u8 = 1;\n";
+        assert_clean(&scan_within_deadline(APP_MAIN, src.to_owned()));
+        assert_clean(&scan_within_deadline(TEST_FILE, src.to_owned()));
+    }
+
+    #[test]
+    fn precise_capturing_at_module_level_terminates() {
+        let src = "fn f<'a>(x: &'a [u8]) -> impl Iterator<Item = u8> + use<'a> {\n    x.iter().copied()\n}\nfn g() -> impl Sized + use<> {}\nfn h<'a, T>(x: &'a T) -> impl use<'a, T> + Sized { x }\n";
+        assert_clean(&scan_within_deadline(APP_MAIN, src.to_owned()));
+    }
+
+    #[test]
+    fn use_in_macro_and_inline_module_terminates() {
+        let clean = "macro_rules! m { () => { use std::io::Read; }; }\nmod a {\n    use std::io;\n    pub fn f() -> impl Sized + use<> {}\n}\nmod b { use std::io::Write; }\n";
+        assert_clean(&scan_within_deadline(APP_MAIN, clean.to_owned()));
+        let in_macro = "macro_rules! m { () => { use std::fs::remove_file; } }\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, in_macro.to_owned()),
+            RULE_USE_TREE,
+        );
+        let in_mod = "mod a {\n    pub fn f() -> impl Sized + use<> {}\n}\nmod b { use std::fs::remove_file; }\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, in_mod.to_owned()),
+            RULE_USE_TREE,
+        );
+    }
+
+    #[test]
+    fn use_before_unbalanced_brace_terminates() {
+        // Malformed input the compiler rejects; the scan only has to end.
+        for src in [
+            "use }",
+            "use }}}",
+            "fn f() { use std::io }\n}\nfn g() {}",
+            "use a as { b } c }",
+            "use a::{b, }} c;",
+            "use {{{{",
+            "impl S { fn f() -> impl Sized + use<> {} }}",
+        ] {
+            scan_within_deadline(APP_MAIN, src.to_owned());
+            scan_within_deadline(TEST_FILE, src.to_owned());
+        }
+    }
+
+    #[test]
+    fn generated_precise_capturing_source_terminates() {
+        // 10,000 bounds of each shape: inside an impl block (where T3's scan
+        // looped forever), at module level, and interleaved with ordinary
+        // `use` declarations, so a scan superlinear in the number of `use`
+        // tokens also overruns the deadline.
+        use std::fmt::Write as _;
+        let n = 10_000;
+        let mut src = String::from("struct S;\nimpl S {\n");
+        for i in 0..n {
+            writeln!(
+                src,
+                "    fn m{i}<'a>(&'a self) -> impl Sized + use<'a> {{}}"
+            )
+            .unwrap();
+        }
+        src.push_str("}\n");
+        for i in 0..n {
+            writeln!(
+                src,
+                "use std::io::Read as R{i};\nfn f{i}() -> impl Sized + use<> {{}}"
+            )
+            .unwrap();
+        }
+        assert_clean(&scan_within_deadline(APP_MAIN, src));
+    }
+
+    #[test]
+    fn flags_call_in_body_of_precise_capturing_function() {
+        // A `use<…>` bound read as a declaration hid the body that follows
+        // it from the qualified-path pass.
+        let module_level = "fn f<'a>(p: &'a std::path::Path) -> impl Sized + use<'a> {\n    std::fs::remove_file(p)\n}\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, module_level.to_owned()),
+            RULE_QUALIFIED,
+        );
+        let in_impl = "impl S {\n    fn f<'a>(&'a self, p: &'a std::path::Path) -> impl Sized + use<'a> {\n        std::fs::remove_file(p)\n    }\n}\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, in_impl.to_owned()),
+            RULE_QUALIFIED,
+        );
+        let method = "fn f<'a>(d: &'a Dir) -> impl Sized + use<'a> { d.rename(\"a\", \"b\") }\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, method.to_owned()),
+            RULE_METHOD,
+        );
+        let test_copy =
+            "fn t<'a>(a: &'a str) -> impl Sized + use<'a> { std::fs::copy(a, \"b\") }\n";
+        // The direct-call rule, on the body's line, proves the bound opened
+        // no declaration range: inside one only the `use`-of-`copy` form,
+        // with a different detail, could fire.
+        let findings = scan_within_deadline(TEST_FILE, test_copy.to_owned());
+        assert!(
+            findings.iter().any(|f| f.rule == RULE_TEST_NAME
+                && f.line == 1
+                && f.detail.starts_with("`fs::copy` in an integration test")),
+            "expected the direct `fs::copy` finding, got {findings:#?}"
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.detail.contains("`use` of `copy`")),
+            "a precise-capturing bound was read as a `use` declaration: {findings:#?}"
+        );
+    }
+
+    #[test]
+    fn flags_use_declaration_after_precise_capturing_function() {
+        let module_level = "fn f() -> impl Sized + use<> {}\nuse std::fs::remove_file;\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, module_level.to_owned()),
+            RULE_USE_TREE,
+        );
+        let after_impl =
+            "impl S {\n    fn f() -> impl Sized + use<> {}\n}\nuse std::fs::remove_file;\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, after_impl.to_owned()),
+            RULE_USE_TREE,
+        );
+    }
+
+    // ── Bounded-time scan: adversarial nesting and repetition (T32) ────────
+
+    #[test]
+    fn deeply_nested_use_tree_is_reported_not_scanned() {
+        // Each level re-clones its whole prefix, so depth N flattens to
+        // Θ(N²) segments without a bound.
+        let n = 10_000;
+        let src = format!("use {}x{};", repeat("a::{self, ", n), repeat("}", n));
+        assert_flags(&scan_within_deadline(APP_MAIN, src), RULE_NESTING);
+    }
+
+    #[test]
+    fn oversized_use_tree_is_reported_not_scanned() {
+        // A long shared prefix times many members, with no nesting at all.
+        let n = 5_000;
+        let src = format!("use {}{{{}}};", repeat("a::", n), repeat("x, ", n));
+        assert_flags(&scan_within_deadline(APP_MAIN, src), RULE_USE_SIZE);
+    }
+
+    #[test]
+    fn real_use_trees_stay_under_the_scan_bounds() {
+        let src = "use std::{collections::{BTreeMap, BTreeSet}, io::{self, Read as _}, path::{Path, PathBuf}};\npub(in crate::a::b) use crate::a::{b::{c::{d::{e::{f::{g::{h}}}}}}};";
+        assert_clean(&scan_within_deadline(APP_MAIN, src.to_owned()));
+    }
+
+    #[test]
+    fn stray_close_paren_before_use_and_mod_is_linear() {
+        // `pub(…)` detection searched back from every `)` before a `use` or
+        // `mod` to the nearest `(`, which here is never found.
+        let src = repeat(") use x;\n) mod m {}\n", 30_000);
+        assert_clean(&scan_within_deadline(APP_MAIN, src));
+    }
+
+    #[test]
+    fn deeply_nested_inline_mods_are_reported_not_scanned() {
+        let n = 20_000;
+        let src = format!("{}{}", repeat("mod m {\n", n), repeat("}\n", n));
+        assert_flags(&scan_within_deadline(APP_MAIN, src), RULE_NESTING);
+    }
+
+    #[test]
+    fn deeply_nested_cfg_is_reported_not_scanned() {
+        // Recursion per nesting level overflowed the worker's stack.
+        let n = 100_000;
+        let src = format!(
+            "#[cfg({}test{})]\nmod m {{}}\n",
+            repeat("all(", n),
+            repeat(")", n)
+        );
+        assert_flags(&scan_within_deadline(APP_MAIN, src), RULE_NESTING);
+    }
+
+    #[test]
+    fn nesting_within_the_bound_is_scanned() {
+        // 40 levels: past anything in the workspace (about 13), under the
+        // bound, and the call at the bottom is still found.
+        let src = format!(
+            "#[cfg({}unix{})]\nfn f() {{ {} std::fs::remove_file(\"x\"); {} }}",
+            repeat("all(", 40),
+            repeat(")", 40),
+            repeat("{", 40),
+            repeat("}", 40)
+        );
+        let findings = scan_within_deadline(APP_MAIN, src);
+        assert_flags(&findings, RULE_QUALIFIED);
+        assert!(
+            !findings.iter().any(|f| f.rule == RULE_NESTING),
+            "40 levels tripped the nesting bound: {findings:#?}"
+        );
+    }
+
+    #[test]
+    fn many_sibling_test_modules_are_linear() {
+        // Region lookups and innermost-module searches per hit and per
+        // inner attribute were products of two counts that grow with input.
+        let unit = "#[cfg(test)]\nmod t {\n    #![cfg(test)]\n    fn f() { let _ = std::fs::remove_file(\"x\"); }\n}\n";
+        let findings = scan_within_deadline(APP_MAIN, repeat(unit, 30_000));
+        assert_flags(&findings, RULE_QUALIFIED);
+    }
+
+    #[test]
+    fn forward_searches_are_linear() {
+        // Each `type`, `expect` and lint reference searched forward to a
+        // terminator that never comes.
+        let aliases = repeat("type A ", 60_000);
+        assert_clean(&scan_within_deadline(APP_MAIN, aliases));
+        let expects = repeat(
+            "#[expect(clippy::disallowed_methods, reason = \"x\")]\n",
+            20_000,
+        );
+        assert_flags(&scan_within_deadline(TEST_FILE, expects), RULE_TEST_TMPDIR);
+        let refs = format!(
+            "#[expect(reason, {})]\nfn f() {{}}",
+            repeat("clippy::disallowed_methods, ", 30_000)
+        );
+        assert_flags(&scan_within_deadline(APP_MAIN, refs), RULE_EXPECT_LOCATION);
+    }
+
+    #[test]
+    fn module_tree_is_linear() {
+        let unit = "#[cfg(test)]\nmod t {\n    #![cfg(test)]\n    mod x;\n}\n";
+        let src = repeat(unit, 30_000);
+        let tree = within_deadline("module_tree of 30,000 test modules", move || {
+            module_tree(&BTreeMap::from([("crates/x/src/lib.rs".to_owned(), src)]))
+        });
+        assert!(
+            !tree.findings.is_empty(),
+            "unresolved `mod x;` was not reported"
+        );
+    }
+
+    #[test]
+    fn use_inside_attribute_does_not_hide_code() {
+        // Clippy never compiles the Windows branch, so this scan is the only
+        // check on it.
+        let src = "#[cfg(windows)]\n#[cfg_attr(any(), deprecated(use))]\nfn f(p: &std::path::Path) { let _ = std::fs::remove_file(p); }\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, src.to_owned()),
+            RULE_QUALIFIED,
+        );
+        let bracketed =
+            "#[doc = x[use]]\nfn f(p: &std::path::Path) { let _ = std::fs::remove_file(p); }\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, bracketed.to_owned()),
+            RULE_QUALIFIED,
+        );
+    }
+
+    #[test]
+    fn use_inside_parentheses_is_still_judged() {
+        // Not a declaration, so it masks nothing, but a macro may still
+        // expand it into one: its tree is judged anyway (fail closed).
+        let src = "m!(use std::fs::remove_file;);\n";
+        assert_flags(
+            &scan_within_deadline(APP_MAIN, src.to_owned()),
+            RULE_USE_TREE,
+        );
+    }
+
+    #[test]
+    fn flags_unparseable_use_declaration() {
+        let src = "use a = b;\nfn f(p: &std::path::Path) { let _ = std::fs::remove_file(p); }\n";
+        let findings = scan_within_deadline(APP_MAIN, src.to_owned());
+        assert_flags(&findings, RULE_USE_PARSE);
+        assert_flags(&findings, RULE_QUALIFIED);
+        let macro_body =
+            "macro_rules! m { ($p:path) => { use $p; use $crate::a::{b, c as _}; } }\n";
+        assert_clean(&scan_within_deadline(APP_MAIN, macro_body.to_owned()));
     }
 }
