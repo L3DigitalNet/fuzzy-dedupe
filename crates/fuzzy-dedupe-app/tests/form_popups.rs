@@ -16,6 +16,7 @@
 
 mod form_popups {
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -53,10 +54,13 @@ mod form_popups {
     }
 
     /// Answers every pick with `answer` and records each request.
+    /// `notified` counts the picks whose notify has returned, so a test can
+    /// wait until the worker's last cross-thread repaint has landed.
     #[derive(Clone, Default)]
     struct FakePicker {
         answer: Arc<Mutex<Vec<PathBuf>>>,
         requests: Arc<Mutex<Vec<PickRequest>>>,
+        notified: Arc<AtomicUsize>,
     }
 
     impl FolderPicker for FakePicker {
@@ -67,7 +71,14 @@ mod form_popups {
         ) -> PickHandle {
             self.requests.lock().unwrap().push(request);
             let folders = self.answer.lock().unwrap().clone();
-            PickHandle::spawn(move || PickOutcome::Chosen(folders), notify)
+            let notified = Arc::clone(&self.notified);
+            PickHandle::spawn(
+                move || PickOutcome::Chosen(folders),
+                move || {
+                    notify();
+                    notified.fetch_add(1, Ordering::SeqCst);
+                },
+            )
         }
     }
 
@@ -174,7 +185,7 @@ mod form_popups {
             other => panic!("{other:?} is not a form popup"),
         };
         chord(h, Modifiers::CTRL, key);
-        h.run();
+        settle(h);
         assert_eq!(open_dialog(h), Some(kind));
     }
 
@@ -182,9 +193,66 @@ mod form_popups {
     /// expanded New scan content is taller than the popup and scrolls.
     fn click(h: &mut Shell, role: Role, label: &str) {
         h.get_by_role_and_label(role, label).scroll_to_me();
-        h.run();
+        settle(h);
         h.get_by_role_and_label(role, label).click();
-        h.run();
+        settle(h);
+    }
+
+    /// Runs frames until the UI stops requesting repaints, accepting a
+    /// scanning view that never stops.
+    ///
+    /// The Findings scanning view draws an indeterminate, animated progress
+    /// bar for as long as the stage is Running or Stopping, so a scan in
+    /// flight repaints every frame and `Harness::run` can never settle. A
+    /// run that exceeds the step budget is therefore accepted when:
+    /// - the stage is still animated afterwards; or
+    /// - a scan started or changed stage during the run and the view then
+    ///   settled (`steps_to_settle` is set). A small scan can finish inside
+    ///   `try_run`'s diagnostic steps, leaving a Completed stage behind a
+    ///   budget that only the animation exhausted.
+    ///
+    /// Any other overrun panics with kittest's own error, so a runaway
+    /// repaint outside a scan still fails the test. Raising `max_steps`
+    /// would hide that runaway instead, and a fixed `run_steps(n)` would
+    /// depend on how many frames the scan happens to take.
+    #[track_caller]
+    fn settle(h: &mut Shell) {
+        let before = (state(h).scan.scan, state(h).scan.stage);
+        let Err(err) = h.try_run() else {
+            return;
+        };
+        let after = (state(h).scan.scan, state(h).scan.stage);
+        let animated = matches!(after.1, ScanStage::Running | ScanStage::Stopping);
+        let scan_ended_and_settled = after != before && err.steps_to_settle.is_some();
+        assert!(animated || scan_ended_and_settled, "{err}");
+    }
+
+    /// Clicks a control that opens the folder picker, then waits until the
+    /// fake picker has answered and its notify has returned before settling.
+    ///
+    /// The worker's notify calls `request_repaint` from another thread, so
+    /// left alone the repaint lands in whichever frame the thread timing
+    /// allows and can push a settle over its step budget (the T34 flake:
+    /// "would have settled after 6 steps", cause `commands.rs`
+    /// `UiIntent::PickFolders`). Once `notified` has moved, the result was
+    /// already sent (the handle sends before notifying) and no further
+    /// cross-thread repaint can arrive, so the settle that follows absorbs
+    /// the pick deterministically.
+    fn click_and_pick(h: &mut Shell, picker: &FakePicker, label: &str) {
+        let target = picker.notified.load(Ordering::SeqCst) + 1;
+        h.get_by_role_and_label(Role::Button, label).scroll_to_me();
+        settle(h);
+        h.get_by_role_and_label(Role::Button, label).click();
+        // Same bound as `run_until`: 500 frames, 10 ms apart.
+        for _ in 0..500 {
+            h.step();
+            if picker.notified.load(Ordering::SeqCst) >= target {
+                settle(h);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("timed out waiting for the folder picker's answer");
     }
 
     fn checked(h: &Shell, label: &str) -> bool {
@@ -210,7 +278,7 @@ mod form_popups {
         };
         chord(h, select_all, Key::A);
         similarity(h).type_text(text);
-        h.run();
+        settle(h);
     }
 
     /// Runs frames until `done` holds, for engine and picker work on
@@ -329,15 +397,8 @@ mod form_popups {
                 Role::Button,
                 &format!("Remove {}", shown(&folders[1].0)),
             );
-            click(&mut h, Role::Button, "+ Add folder");
+            click_and_pick(&mut h, &picker, "+ Add folder");
             let added = format!("Remove {}", shown(&crate_dir("assets")));
-            for _ in 0..100 {
-                h.run();
-                if h.query_by_role_and_label(Role::Button, &added).is_some() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
             assert!(
                 h.query_by_role_and_label(Role::Button, &added).is_some(),
                 "the picked folder joined the draft"
@@ -656,15 +717,8 @@ mod form_popups {
             "no nested folder yet"
         );
 
-        click(&mut h, Role::Button, "+ Add folder");
+        click_and_pick(&mut h, &picker, "+ Add folder");
         let nested = format!("Inside {} — scanned once", shown(&crate_dir("src")));
-        for _ in 0..100 {
-            h.run();
-            if h.query_by_label(&nested).is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
         h.get_by_label(&nested);
         // Inside a protected folder, its files are protected through it.
         let inner = format!("Protect files in {}", shown(&crate_dir("src/ui")));
