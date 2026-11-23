@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! PV-T4-001 (plan T4): the fixture scenarios, the C-01 results model and
-//! the C-02 facade stubs.
+//! the C-02 facade properties that hold for any correct module.
+//!
+//! SCOPE: no test here observes a module stub's not-implemented answer, so
+//! T5 to T9 can replace their stub without turning this file red (D-004
+//! forbids them to edit it). Facade properties that need a module's exact
+//! behavior (that a cancel reached the scan service, that a plan was
+//! enqueued) are proved against test doubles in `service::tests`, which an
+//! integration test cannot reach.
 //!
 //! Every test sits in the `fixtures_contract` module so the plan's proof
 //! filter `-E 'test(fixtures_contract)'` selects them all; nextest's `test()`
@@ -17,6 +24,7 @@
 
 mod fixtures_contract {
     use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+    use std::panic::AssertUnwindSafe;
     use std::time::{Duration, Instant};
 
     use std::sync::Arc;
@@ -32,12 +40,11 @@ mod fixtures_contract {
     use fuzzy_dedupe_engine::review::ReviewCommand;
     use fuzzy_dedupe_engine::service::{ActiveScenario, AdoptError, ScenarioGeneration};
     use fuzzy_dedupe_engine::service::{
-        BuildCleanupPlan, ComparisonRequest, Engine, EngineConfig, EngineEvent, EngineModule,
-        EngineRequest, ExecuteApprovedPlan, Origin, ReviewStatus, StartScan, SubmitError,
+        BuildCleanupPlan, Engine, EngineConfig, EngineRequest, Origin, ReviewStatus, StartScan,
+        SubmitError,
     };
 
-    /// The six generated scenarios T4 owns. `Design` is T9's stub and is
-    /// checked separately for its not-implemented outcome.
+    /// The six generated scenarios T4 owns. `Design` is T9's.
     const GENERATED: [ScenarioKind; 6] = [
         ScenarioKind::Large,
         ScenarioKind::Mixed,
@@ -530,10 +537,24 @@ mod fixtures_contract {
 
     /// Seeded review decisions never encode a state C-05 forbids: no queued
     /// reference or protected file, no queued file whose counterpart is
-    /// queued, and no fully queued group.
+    /// queued, no `MakeReference` of a file that is already the reference,
+    /// and no fully queued group. Every seed names a file of the scenario.
+    ///
+    /// Seeds replay in listed order against the state earlier seeds left
+    /// (see `SeededDecision`), so a `MakeReference` changes the group's
+    /// reference and counterparts before a later `Queue` seed in that group.
+    /// The scan results still show the §6 default, so such a `Queue` seed is
+    /// checked only for existence, group membership and folder protection,
+    /// which no review command changes. Recomputing the counterparts after a
+    /// reference change is T7's policy, not this oracle's.
     fn check_seeds(scenario: &Scenario) {
         let kind = scenario.kind;
         let by_id = members_by_id(scenario);
+        let known = |file: &FileId| {
+            by_id
+                .get(file)
+                .unwrap_or_else(|| panic!("{kind:?}: seed names unknown {file:?}"))
+        };
         let queued: BTreeSet<FileId> = scenario
             .seeded_decisions
             .iter()
@@ -542,16 +563,42 @@ mod fixtures_contract {
                 _ => None,
             })
             .collect();
+        let mut rereferenced = HashMap::new();
         for d in &scenario.seeded_decisions {
-            let file = match d {
-                SeededDecision::Kept(f) | SeededDecision::Protect(f) => *f,
+            match d {
+                SeededDecision::Kept(f) | SeededDecision::Protect(f) => {
+                    known(f);
+                }
+                SeededDecision::MakeReference(f) => {
+                    let (group, _) = known(f);
+                    // The reference the replay has reached: an earlier seed's
+                    // choice, otherwise the results' §6 default.
+                    let current = rereferenced
+                        .get(&group.id)
+                        .copied()
+                        .unwrap_or(group.members[0].file);
+                    assert_ne!(
+                        *f, current,
+                        "{kind:?} {}: MakeReference seed names {f:?}, already the reference",
+                        group.label
+                    );
+                    rereferenced.insert(group.id, *f);
+                }
                 SeededDecision::Queue { file, counterpart } => {
-                    let (_, m) = by_id[file];
-                    assert!(!m.is_reference(), "{kind:?}: seed queues a reference");
+                    let (group, m) = known(file);
+                    let (counterpart_group, _) = known(counterpart);
+                    assert_eq!(
+                        group.id, counterpart_group.id,
+                        "{kind:?}: seed counterpart is in another group"
+                    );
                     assert!(
                         !m.folder_protected,
                         "{kind:?}: seed queues a protected file"
                     );
+                    if rereferenced.contains_key(&group.id) {
+                        continue;
+                    }
+                    assert!(!m.is_reference(), "{kind:?}: seed queues a reference");
                     assert_eq!(
                         m.counterpart(),
                         Some(*counterpart),
@@ -561,13 +608,8 @@ mod fixtures_contract {
                         !queued.contains(counterpart),
                         "{kind:?}: counterpart queued"
                     );
-                    *file
                 }
-            };
-            assert!(
-                by_id.contains_key(&file),
-                "{kind:?}: seed names unknown {file:?}"
-            );
+            }
         }
         for group in &scenario.results.groups {
             assert!(
@@ -576,6 +618,58 @@ mod fixtures_contract {
                 group.label
             );
         }
+    }
+
+    /// `check_seeds`'s panic message, or `None` when it accepts the seeds.
+    fn seed_rejection(scenario: &Scenario) -> Option<String> {
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| check_seeds(scenario)));
+        outcome.err().map(|panic| {
+            panic
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_else(|| "non-string panic".to_owned())
+        })
+    }
+
+    /// No generated scenario seeds `MakeReference` yet (T9's design sample
+    /// will), so the sweep in `every_c01_invariant_holds_over_all_scenarios`
+    /// cannot show that the check bites. These hand-built seeds do.
+    #[test]
+    fn seed_check_rejects_a_make_reference_of_the_current_reference() {
+        let mut scenario = build(ScenarioKind::Mixed);
+        let group = &scenario.results.groups[0];
+        let (reference, member) = (group.members[0].file, group.members[1].file);
+
+        scenario.seeded_decisions = vec![SeededDecision::MakeReference(member)];
+        assert_eq!(
+            seed_rejection(&scenario),
+            None,
+            "a member may become reference"
+        );
+
+        scenario.seeded_decisions = vec![SeededDecision::MakeReference(reference)];
+        let rejected = seed_rejection(&scenario).expect("the current reference is rejected");
+        assert!(rejected.contains("already the reference"), "{rejected}");
+
+        // "Current" is the replay's state, not the results': after the first
+        // seed, `member` is the reference and the §6 default is not.
+        scenario.seeded_decisions = vec![
+            SeededDecision::MakeReference(member),
+            SeededDecision::MakeReference(reference),
+        ];
+        assert_eq!(seed_rejection(&scenario), None, "back to the default");
+        scenario.seeded_decisions = vec![
+            SeededDecision::MakeReference(member),
+            SeededDecision::MakeReference(member),
+        ];
+        let rejected = seed_rejection(&scenario).expect("a repeated choice is rejected");
+        assert!(rejected.contains("already the reference"), "{rejected}");
+
+        // Outside every group, which the existence check must still catch.
+        let unknown = FileId::new(u64::MAX);
+        scenario.seeded_decisions = vec![SeededDecision::MakeReference(unknown)];
+        let rejected = seed_rejection(&scenario).expect("an unknown file is rejected");
+        assert!(rejected.contains("unknown"), "{rejected}");
     }
 
     // ── FR-013 pairs in `mixed` ──────────────────────────────────────────
@@ -679,180 +773,6 @@ mod fixtures_contract {
                 assert!(build(kind).evidence_changes.is_empty(), "{kind:?}");
             }
         }
-    }
-
-    // ── C-02 stubs ───────────────────────────────────────────────────────
-
-    fn drain_until(engine: &mut Engine, mut done: impl FnMut(&EngineEvent) -> bool) -> EngineEvent {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            for event in engine.drain_events(16) {
-                if done(&event) {
-                    return event;
-                }
-            }
-            assert!(
-                Instant::now() < deadline,
-                "no matching engine event within 10 s"
-            );
-            std::thread::yield_now();
-        }
-    }
-
-    fn not_implemented_for(origin: Origin, module: EngineModule) -> impl Fn(&EngineEvent) -> bool {
-        move |e| {
-            matches!(e, EngineEvent::NotImplemented { origin: o, missing }
-                if *o == origin && missing.module == module)
-        }
-    }
-
-    #[test]
-    fn stubs_return_a_typed_not_implemented_outcome() {
-        assert_eq!(
-            fixtures::build(ScenarioKind::Design, SCAN, DEFAULT_SEED)
-                .expect_err("design is T9's stub")
-                .module,
-            EngineModule::DesignFixture
-        );
-
-        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
-        let mixed = build(ScenarioKind::Mixed);
-
-        let scan = match engine.submit(EngineRequest::StartScan(StartScan {
-            setup: mixed.results.setup.clone(),
-            rules: mixed.results.rules,
-            scenario: ScenarioKind::Mixed,
-            seed: DEFAULT_SEED,
-        })) {
-            Ok(Origin::Scan(id)) => id,
-            other => panic!("StartScan: {other:?}"),
-        };
-        drain_until(
-            &mut engine,
-            not_implemented_for(Origin::Scan(scan), EngineModule::ScanSim),
-        );
-        assert_eq!(
-            engine.submit(EngineRequest::CancelScan(scan)),
-            Ok(Origin::Scan(scan))
-        );
-        drain_until(
-            &mut engine,
-            not_implemented_for(Origin::Scan(scan), EngineModule::ScanSim),
-        );
-
-        let (group, member) = (
-            &mixed.results.groups[0],
-            &mixed.results.groups[0].members[1],
-        );
-        let request = match engine.submit(EngineRequest::LoadComparison(ComparisonRequest {
-            scan,
-            target: member.file,
-            counterpart: group.members[0].file,
-            target_snapshot: member.snapshot,
-            counterpart_snapshot: group.members[0].snapshot,
-            rules: mixed.results.rules.revision,
-            mode: fuzzy_dedupe_domain::CompareMode::Original,
-        })) {
-            Ok(origin @ Origin::Request(_)) => origin,
-            other => panic!("LoadComparison: {other:?}"),
-        };
-        drain_until(
-            &mut engine,
-            not_implemented_for(request, EngineModule::Compare),
-        );
-
-        // Review is synchronous: each command answers in place.
-        for command in [
-            ReviewCommand::MarkKept {
-                file: member.file,
-                kept: true,
-            },
-            ReviewCommand::MakeReference { file: member.file },
-            ReviewCommand::ClearForNewScan,
-        ] {
-            let outcome = engine.review(command);
-            assert!(
-                matches!(outcome.status, ReviewStatus::NotImplemented(m)
-                    if m.module == EngineModule::Review),
-                "review stub: {outcome:?}"
-            );
-            assert!(outcome.invalidated.is_empty() && outcome.changed.is_empty());
-        }
-
-        // The plan is built from the review service's published view, which
-        // the stub cannot produce, so the refusal is synchronous.
-        let adopted = engine
-            .adopt_scenario(Arc::new(mixed.clone()))
-            .expect("fresh scan ID");
-        assert!(matches!(
-            engine.submit(EngineRequest::BuildCleanupPlan(BuildCleanupPlan { scan: adopted })),
-            Err(SubmitError::NotImplemented(m)) if m.module == EngineModule::Review
-        ));
-        let plan = fuzzy_dedupe_domain::PlanRevision::new(1);
-        assert_eq!(
-            engine.submit(EngineRequest::ExecuteApprovedPlan(ExecuteApprovedPlan {
-                plan
-            })),
-            Ok(Origin::Plan(plan))
-        );
-        drain_until(
-            &mut engine,
-            not_implemented_for(Origin::Plan(plan), EngineModule::CleanupSim),
-        );
-        // A stop reaches the cleanup service only for the live plan.
-        let plan = engine.plan_revisions().allocate();
-        engine.plan_revisions().activate(plan);
-        assert_eq!(
-            engine.submit(EngineRequest::StopCleanup(plan)),
-            Ok(Origin::Plan(plan))
-        );
-        drain_until(
-            &mut engine,
-            not_implemented_for(Origin::Plan(plan), EngineModule::CleanupSim),
-        );
-    }
-
-    #[test]
-    fn a_full_request_queue_is_busy_and_cancellation_is_still_admitted() {
-        // One-slot queues and no draining: the dispatcher's refusal backlog
-        // fills, it stops taking jobs, the request queue fills behind it, and
-        // the next submit must answer Busy instead of blocking the caller.
-        let mut engine = Engine::new(EngineConfig {
-            request_capacity: 1,
-            event_capacity: 1,
-            ..EngineConfig::default()
-        })
-        .expect("engine starts");
-        let mixed = build(ScenarioKind::Mixed);
-        let start = || {
-            EngineRequest::StartScan(StartScan {
-                setup: mixed.results.setup.clone(),
-                rules: mixed.results.rules,
-                scenario: ScenarioKind::Mixed,
-                seed: DEFAULT_SEED,
-            })
-        };
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut last = None;
-        loop {
-            match engine.submit(start()) {
-                Ok(Origin::Scan(id)) => last = Some(id),
-                Err(SubmitError::Busy) => break,
-                other => panic!("unexpected submit result {other:?}"),
-            }
-            assert!(Instant::now() < deadline, "the request queue never filled");
-        }
-        let scan = last.expect("at least one scan was admitted");
-        assert_eq!(
-            engine.submit(EngineRequest::CancelScan(scan)),
-            Ok(Origin::Scan(scan)),
-            "cancellation is admitted while the request queue is full"
-        );
-        // Draining releases the dispatcher; nothing panicked or deadlocked.
-        drain_until(
-            &mut engine,
-            |e| matches!(e, EngineEvent::NotImplemented { origin: Origin::Scan(id), .. } if *id == scan),
-        );
     }
 
     // ── Reference default, owner reading B ───────────────────────────────
@@ -979,18 +899,26 @@ mod fixtures_contract {
         ] {
             refused(engine.review(command).status, Refusal::EvidenceUnavailable);
         }
-        // Without a comparison reference, a Findings request reaches policy.
-        assert!(matches!(
-            engine
-                .review(ReviewCommand::RequestQueue {
-                    file: target,
-                    counterpart: chain.members[1].file,
-                    origin: QueueOrigin::Checkbox,
-                    reviewed: None,
-                })
-                .status,
-            ReviewStatus::NotImplemented(_)
-        ));
+        // Without a comparison reference, a Findings request passes the
+        // evidence route. What policy answers is the review module's business;
+        // that the command reaches it with no pair is proved against a test
+        // double in `service::tests`.
+        let findings = engine.review(ReviewCommand::RequestQueue {
+            file: target,
+            counterpart: chain.members[1].file,
+            origin: QueueOrigin::Checkbox,
+            reviewed: None,
+        });
+        assert!(
+            !matches!(
+                findings.status,
+                ReviewStatus::Refused {
+                    refusal: Refusal::EvidenceUnavailable | Refusal::EvidenceMismatch,
+                    ..
+                }
+            ),
+            "a Findings request is not an evidence refusal: {findings:?}"
+        );
     }
 
     // ── Cleanup provenance and validation ────────────────────────────────
@@ -1020,13 +948,16 @@ mod fixtures_contract {
                 current: Some(SCAN)
             })
         );
-        // The matching scan passes provenance and reaches the review stub.
-        assert!(matches!(
-            engine.submit(EngineRequest::BuildCleanupPlan(BuildCleanupPlan { scan: SCAN })),
-            Err(SubmitError::NotImplemented(m)) if m.module == EngineModule::Review
-        ));
-        // The stub publishes no validation view.
-        assert!(engine.validation().current().is_none());
+        // The matching scan passes provenance. Whether a plan is then built
+        // depends on the review module; that it is enqueued from the
+        // published view is proved against test doubles in `service::tests`.
+        let matching = engine.submit(EngineRequest::BuildCleanupPlan(BuildCleanupPlan {
+            scan: SCAN,
+        }));
+        assert!(
+            !matches!(matching, Err(SubmitError::ScanMismatch { .. })),
+            "the reviewed scan passes provenance: {matching:?}"
+        );
     }
 
     #[test]
@@ -1125,131 +1056,7 @@ mod fixtures_contract {
         assert_eq!(engine.active().get().as_deref(), Some(&*scenario));
     }
 
-    // ── Non-blocking dispatcher under a full event queue ─────────────────
-
-    #[test]
-    fn cancellation_is_processed_while_the_event_queue_stays_full() {
-        let mut engine = Engine::new(EngineConfig {
-            request_capacity: 1,
-            event_capacity: 1,
-            ..EngineConfig::default()
-        })
-        .expect("engine starts");
-        let mixed = build(ScenarioKind::Mixed);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut last = None;
-        while engine
-            .submit(EngineRequest::StartScan(StartScan {
-                setup: mixed.results.setup.clone(),
-                rules: mixed.results.rules,
-                scenario: ScenarioKind::Mixed,
-                seed: DEFAULT_SEED,
-            }))
-            .map(|origin| last = Some(origin))
-            .is_ok()
-        {
-            assert!(Instant::now() < deadline, "the queues never filled");
-        }
-        let Some(Origin::Scan(scan)) = last else {
-            panic!("no scan admitted")
-        };
-        // Nothing is drained, so the event queue stays full throughout.
-        for _ in 0..100 {
-            assert_eq!(
-                engine.submit(EngineRequest::CancelScan(scan)),
-                Ok(Origin::Scan(scan)),
-                "cancellation is always admitted"
-            );
-        }
-        assert!(engine.pending_controls() <= 1, "repeated cancels coalesce");
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while engine.pending_controls() > 0 {
-            assert!(
-                Instant::now() < deadline,
-                "the dispatcher did not take the cancellation within 1 s"
-            );
-            std::thread::yield_now();
-        }
-        drain_until(
-            &mut engine,
-            not_implemented_for(Origin::Scan(scan), EngineModule::ScanSim),
-        );
-    }
-
-    // ── Round 3: live controls, scan identity ────────────────────────────
-
-    fn notices_for(engine: &mut Engine, settle: Duration) -> Vec<Origin> {
-        let deadline = Instant::now() + settle;
-        let mut seen = Vec::new();
-        while Instant::now() < deadline {
-            seen.extend(engine.drain_events(64).iter().map(EngineEvent::origin));
-            std::thread::yield_now();
-        }
-        seen
-    }
-
-    #[test]
-    fn a_live_cancellation_survives_a_flood_of_unknown_ones() {
-        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
-        let mixed = build(ScenarioKind::Mixed);
-        let Ok(Origin::Scan(live)) = engine.submit(EngineRequest::StartScan(StartScan {
-            setup: mixed.results.setup.clone(),
-            rules: mixed.results.rules,
-            scenario: ScenarioKind::Mixed,
-            seed: DEFAULT_SEED,
-        })) else {
-            panic!("StartScan admitted")
-        };
-        // The start's own refusal, so the next Scan(live) notice is the cancel's.
-        drain_until(
-            &mut engine,
-            not_implemented_for(Origin::Scan(live), EngineModule::ScanSim),
-        );
-        assert_eq!(
-            engine.submit(EngineRequest::CancelScan(live)),
-            Ok(Origin::Scan(live))
-        );
-        for unknown in 1000..1020 {
-            let id = ScanId::new(unknown);
-            assert_eq!(
-                engine.submit(EngineRequest::CancelScan(id)),
-                Ok(Origin::Scan(id)),
-                "unknown IDs are acknowledged harmlessly"
-            );
-        }
-        assert!(engine.pending_controls() <= 1, "only the live scan is held");
-        let seen = notices_for(&mut engine, Duration::from_millis(300));
-        assert!(
-            seen.contains(&Origin::Scan(live)),
-            "the live cancel reached the stub"
-        );
-        assert!(
-            seen.iter().all(|o| *o == Origin::Scan(live)),
-            "no unknown cancel reached a module: {seen:?}"
-        );
-
-        // The same for StopCleanup, with a plan made live through the shared
-        // allocator, as T8 does for a revised plan.
-        let plan = engine.plan_revisions().allocate();
-        engine.plan_revisions().activate(plan);
-        assert_eq!(
-            engine.submit(EngineRequest::StopCleanup(plan)),
-            Ok(Origin::Plan(plan))
-        );
-        for unknown in 1000..1020 {
-            let id = fuzzy_dedupe_domain::PlanRevision::new(unknown);
-            assert_eq!(
-                engine.submit(EngineRequest::StopCleanup(id)),
-                Ok(Origin::Plan(id))
-            );
-        }
-        let seen = notices_for(&mut engine, Duration::from_millis(300));
-        assert_eq!(
-            seen,
-            [Origin::Plan(plan)],
-            "only the live stop reached the stub"
-        );
-    }
+    // ── Plan revisions and scan identity ─────────────────────────────────
 
     #[test]
     fn plan_revisions_are_shared_unique_and_increasing() {
