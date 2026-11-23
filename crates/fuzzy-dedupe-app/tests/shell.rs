@@ -838,8 +838,8 @@ mod shell {
         let aligned = slot.aligned().expect("ready");
         assert!(!aligned.rows.is_empty());
         assert_eq!(
-            aligned.copy_only_in_a().text.lines().count() as u64,
-            aligned.only_in_a.count()
+            aligned.copy_only_in_b().text.lines().count() as u64,
+            aligned.only_in_b.count()
         );
 
         // A newer request supersedes it: the old answer is now stale.

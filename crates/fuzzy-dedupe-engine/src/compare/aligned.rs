@@ -3,9 +3,12 @@
 
 //! The aligned-row model of plan C-04 and the computation that builds it.
 //!
-//! Side A is the comparison's target and side B its counterpart, so
-//! [`AlignedComparison::only_in_a`] is the target's §10.1 Unique count, the
-//! value Findings shows on the target's row and the review evidence carries.
+//! The comparison service passes the counterpart as side A (the left pane,
+//! the evidence anchor) and the target as side B (the right pane, the file
+//! Queue B names), so [`AlignedComparison::only_in_b`] is the target's
+//! §10.1 Unique count, the value Findings shows on the target's row, Review
+//! unique text lists and the review evidence carries. This module itself
+//! knows only sides A and B; the orientation is `compare::compute`'s.
 //!
 //! Two measures live here and must not be confused:
 //!
@@ -194,7 +197,8 @@ pub struct CopyText {
     pub normalized: bool,
 }
 
-/// The aligned comparison of a target (A) with its counterpart (B).
+/// The aligned comparison of side A with side B: from the comparison
+/// service, the counterpart (A) with the target (B).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlignedComparison {
     pub mode: CompareMode,
@@ -283,14 +287,16 @@ impl AlignedComparison {
         })
     }
 
-    /// Copy unique lines for side A: the unique lines in file order, each
-    /// followed by one LF (§10.1), in the shown text of the mode.
+    /// Copy unique lines for side A, the counterpart in a service result:
+    /// the unique lines in file order, each followed by one LF (§10.1), in
+    /// the shown text of the mode.
     #[must_use]
     pub fn copy_only_in_a(&self) -> CopyText {
         copy(&self.a, &self.only_in_a)
     }
 
-    /// [`AlignedComparison::copy_only_in_a`] for side B.
+    /// [`AlignedComparison::copy_only_in_a`] for side B, the target in a
+    /// service result: the text Review unique text copies.
     #[must_use]
     pub fn copy_only_in_b(&self) -> CopyText {
         copy(&self.b, &self.only_in_b)

@@ -18,7 +18,8 @@ mod compare {
     use std::time::{Duration, Instant};
 
     use fuzzy_dedupe_domain::{
-        CompareMode, FileId, IgnoreOptions, Refusal, RequestId, RulesRevision, ScanId, SnapshotId,
+        CompareMode, CounterpartBasis, FileId, IgnoreOptions, MemberRole, QueueOrigin, Refusal,
+        RequestId, RulesRevision, ScanId, SnapshotId,
     };
     use fuzzy_dedupe_engine::compare::normalize::{is_punctuation, normalize_line};
     use fuzzy_dedupe_engine::compare::texts::{self, EditOp, LARGE_BYTES, LARGE_LINES, LargePair};
@@ -222,8 +223,10 @@ mod compare {
         assert_ne!(texts::large_pair(5).a, texts::large_pair(6).a);
     }
 
-    /// The §17.3 UI check 06 pairs (target, counterpart), with the
-    /// hand-written Only in A / Only in B lines in file order.
+    /// The §17.3 UI check 06 pairs as (side A, side B) of a direct
+    /// `compute`, with the hand-written Only in A / Only in B lines in file
+    /// order. The measure is symmetric in its arguments, so these cases hold
+    /// whichever side a service request puts its target on.
     struct Case {
         name: &'static str,
         a: &'static str,
@@ -410,7 +413,7 @@ mod compare {
                     let got = await_comparison(&mut engine, id, &mut Vec::new());
                     assert_eq!(got.request, req);
                     assert_eq!(
-                        ready(&got).only_in_a.count(),
+                        ready(&got).only_in_b.count(),
                         link.unique_lines,
                         "{kind:?} {:?}",
                         member.name
@@ -861,7 +864,7 @@ mod compare {
             }
             assert_eq!(ready(&got).mode, mode);
             assert_eq!(
-                ready(&got).only_in_a.normalized,
+                ready(&got).only_in_b.normalized,
                 mode == CompareMode::Normalized
             );
         }
@@ -1031,5 +1034,328 @@ mod compare {
         assert_eq!(&*model.a.shown().text, "hello world\nkeep\n");
         // The original text, with its CRLF, stays the path back (§11.5).
         assert_eq!(&*model.a.original.text, "Hello,  World!\r\nkeep\n");
+    }
+
+    // ── PV-T35-001: side A is the counterpart, side B the target ─────────
+
+    /// Submits `req` and waits for its ready model, then for the review
+    /// evidence the worker records just after delivery. The probe is a Keep
+    /// both naming the counterpart as its file, which the evidence route
+    /// refuses with `EvidenceMismatch` once the record exists and with
+    /// `EvidenceUnavailable` before, so polling mutates no review state.
+    fn compare_recorded(
+        engine: &mut Engine,
+        req: ComparisonRequest,
+    ) -> (RequestId, AlignedComparison) {
+        let id = submit(engine, req);
+        let got = await_comparison(engine, id, &mut Vec::new());
+        let model = ready(&got).clone();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let probe = engine.review(ReviewCommand::KeepBoth {
+                file: req.counterpart,
+                counterpart: req.target,
+                reviewed: id,
+            });
+            if !evidence_missing(&probe.status) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{id:?} never recorded");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        (id, model)
+    }
+
+    /// Every (target, counterpart, Findings Unique of the target) the
+    /// acceptance names: each member row of the mixed, unicode and stale
+    /// scenarios against its counterpart, and the design scenario's
+    /// frame `13:1304` pair, whose target is `last_compared.b`.
+    fn orientation_pairs(scenario: &Scenario) -> Vec<(FileId, FileId, u64)> {
+        if scenario.kind == ScenarioKind::Design {
+            let pair = fixtures::design::sample()
+                .last_compared
+                .expect("design pair");
+            let group = scenario
+                .results
+                .groups
+                .iter()
+                .find(|g| g.id == pair.group)
+                .expect("the compared group");
+            let link = group.member(pair.b).and_then(|m| m.link()).expect("member");
+            assert_eq!(link.counterpart, pair.a, "the draft's counterpart is A");
+            return vec![(pair.b, pair.a, link.unique_lines)];
+        }
+        scenario
+            .results
+            .groups
+            .iter()
+            .flat_map(|g| g.members.iter())
+            .filter_map(|m| m.link().map(|l| (m.file, l.counterpart, l.unique_lines)))
+            .collect()
+    }
+
+    /// One requested pair of [`orientation_pairs`] with its ready model.
+    struct Oriented {
+        why: String,
+        target: FileId,
+        counterpart: FileId,
+        findings_unique: u64,
+        target_text: String,
+        counterpart_text: String,
+        model: AlignedComparison,
+    }
+
+    /// Requests every [`orientation_pairs`] pair of the design, mixed,
+    /// unicode and stale scenarios through the service, as
+    /// `(target, counterpart)`, the way Compare and Review unique text ask.
+    fn oriented() -> Vec<Oriented> {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
+        let mut out = Vec::new();
+        for kind in [
+            ScenarioKind::Design,
+            ScenarioKind::Mixed,
+            ScenarioKind::Unicode,
+            ScenarioKind::Stale,
+        ] {
+            let scenario = fresh_scan(&mut engine, kind);
+            let scenario = adopt(&mut engine, scenario);
+            for (target, counterpart, findings_unique) in orientation_pairs(&scenario) {
+                let req = request_for(&scenario, target, counterpart);
+                let id = submit(&mut engine, req);
+                let got = await_comparison(&mut engine, id, &mut Vec::new());
+                out.push(Oriented {
+                    why: format!("{kind:?} target {target:?} counterpart {counterpart:?}"),
+                    target,
+                    counterpart,
+                    findings_unique,
+                    target_text: text_of(&scenario, target),
+                    counterpart_text: text_of(&scenario, counterpart),
+                    model: ready(&got).clone(),
+                });
+            }
+        }
+        // Pairs whose two unique counts differ: on those a swapped reading
+        // of the sides fails, on a symmetric pair it would pass unnoticed.
+        assert!(
+            out.iter()
+                .any(|o| o.model.only_in_a.count() != o.model.only_in_b.count()),
+            "no pair with unequal unique counts"
+        );
+        out
+    }
+
+    #[test]
+    fn compare_orientation_side_a_holds_the_counterpart_and_side_b_the_target() {
+        for o in oriented() {
+            let m = &o.model;
+            assert_eq!((m.a.file, m.b.file), (o.counterpart, o.target), "{}", o.why);
+            assert_eq!(&*m.a.original.text, o.counterpart_text, "{}", o.why);
+            assert_eq!(&*m.b.original.text, o.target_text, "{}", o.why);
+        }
+    }
+
+    #[test]
+    fn compare_orientation_only_in_b_is_the_targets_findings_unique() {
+        for o in oriented() {
+            assert_eq!(o.model.only_in_b.count(), o.findings_unique, "{}", o.why);
+        }
+    }
+
+    #[test]
+    fn compare_orientation_design_pair_shows_the_reference_as_side_a() {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
+        let scenario = fresh_scan(&mut engine, ScenarioKind::Design);
+        let scenario = adopt(&mut engine, scenario);
+        let pair = fixtures::design::sample()
+            .last_compared
+            .expect("design pair");
+        let name = |file: FileId| {
+            scenario
+                .results
+                .group_of(file)
+                .and_then(|g| g.member(file))
+                .expect("member")
+                .name
+                .clone()
+        };
+        let req = request_for(&scenario, pair.b, pair.a);
+        let id = submit(&mut engine, req);
+        let got = await_comparison(&mut engine, id, &mut Vec::new());
+        let model = ready(&got);
+        assert_eq!(
+            (name(model.a.file), name(model.b.file)),
+            (
+                "Design_Spec.txt".to_owned(),
+                "Design_Spec_draft.txt".to_owned()
+            )
+        );
+        assert_ne!(
+            model.only_in_a.count(),
+            model.only_in_b.count(),
+            "the design pair is asymmetric, so a swapped reading fails"
+        );
+    }
+
+    /// Records a Compare Keep both of `target` against `counterpart` and
+    /// returns the Unique value the review service now holds for the
+    /// target's row, with the model the review was bound to.
+    fn reaim(
+        engine: &mut Engine,
+        scenario: &Scenario,
+        target: FileId,
+        counterpart: FileId,
+    ) -> (u64, AlignedComparison) {
+        let req = request_for(scenario, target, counterpart);
+        let (id, model) = compare_recorded(engine, req);
+        let outcome = engine.review(ReviewCommand::KeepBoth {
+            file: target,
+            counterpart,
+            reviewed: id,
+        });
+        assert_eq!(outcome.status, ReviewStatus::Applied, "{outcome:?}");
+        let row = outcome
+            .changed
+            .iter()
+            .find(|row| row.file == target)
+            .expect("the re-aimed row changed");
+        let MemberRole::Member(link) = row.role else {
+            panic!("{:?} is not a member", row.role);
+        };
+        assert_eq!(link.counterpart, counterpart);
+        assert_eq!(link.basis, CounterpartBasis::ReviewedInCompare);
+        (link.unique_lines, model)
+    }
+
+    #[test]
+    fn compare_orientation_reaim_without_a_direct_edge_records_only_in_b() {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
+        let scenario = fresh_scan(&mut engine, ScenarioKind::Mixed);
+        let scenario = adopt(&mut engine, scenario);
+        // The FR-013 chain: Minutes_final.txt against Minutes.txt has no
+        // direct edge, so the recorded Unique value can only come from the
+        // comparison's evidence.
+        let chain = &scenario.results.groups[1];
+        let named = |name: &str| {
+            chain
+                .members
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("no {name}"))
+                .file
+        };
+        let (target, counterpart) = (named("Minutes_final.txt"), named("Minutes.txt"));
+        assert!(chain.edge_between(target, counterpart).is_none());
+        let (recorded, model) = reaim(&mut engine, &scenario, target, counterpart);
+        assert_eq!(recorded, model.only_in_b.count());
+        assert_eq!((model.a.file, model.b.file), (counterpart, target));
+    }
+
+    /// Every ordered pair of a member row and another member of its group
+    /// with no direct edge, the re-aims whose Unique value only the
+    /// comparison can supply. Many are asymmetric (the Minutes chain is
+    /// not), so a record taken from side A fails here.
+    #[test]
+    fn compare_orientation_every_edgeless_reaim_records_only_in_b() {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
+        let mut asymmetric = 0;
+        for kind in [
+            ScenarioKind::Mixed,
+            ScenarioKind::Unicode,
+            ScenarioKind::Stale,
+            ScenarioKind::Design,
+        ] {
+            let scenario = fresh_scan(&mut engine, kind);
+            let scenario = adopt(&mut engine, scenario);
+            let mut edgeless = Vec::new();
+            for group in &scenario.results.groups {
+                for t in group.members.iter().filter(|m| m.link().is_some()) {
+                    for c in &group.members {
+                        if c.file != t.file && group.edge_between(t.file, c.file).is_none() {
+                            edgeless.push((t.file, c.file));
+                        }
+                    }
+                }
+            }
+            for (target, counterpart) in edgeless {
+                let (recorded, model) = reaim(&mut engine, &scenario, target, counterpart);
+                let oracle = oracle_unique(
+                    &lines(&text_of(&scenario, target)),
+                    &lines(&text_of(&scenario, counterpart)),
+                )
+                .len() as u64;
+                let why = format!("{kind:?} target {target:?} counterpart {counterpart:?}");
+                assert_eq!(recorded, oracle, "{why}");
+                assert_eq!(recorded, model.only_in_b.count(), "{why}");
+                if model.only_in_a.count() != model.only_in_b.count() {
+                    asymmetric += 1;
+                }
+            }
+        }
+        assert!(asymmetric > 0, "no edge-less pair with unequal counts");
+    }
+
+    #[test]
+    fn compare_orientation_review_commands_name_the_right_pane_as_their_target() {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
+        let scenario = fresh_scan(&mut engine, ScenarioKind::Design);
+        let scenario = adopt(&mut engine, scenario);
+        let pair = fixtures::design::sample()
+            .last_compared
+            .expect("design pair");
+        // Named by role, not read from the model's sides: the evidence key
+        // is (target, counterpart) whatever the orientation, so this case
+        // holds on either side order. Frame `13:1304` draws `pair.a`, the
+        // counterpart, in the left pane.
+        let (left, right) = (pair.a, pair.b);
+        let req = request_for(&scenario, right, left);
+        let (id, _) = compare_recorded(&mut engine, req);
+        let mismatch = |status: &ReviewStatus| {
+            matches!(
+                status,
+                ReviewStatus::Refused {
+                    refusal: Refusal::EvidenceMismatch,
+                    ..
+                }
+            )
+        };
+
+        // The left-pane file named as the target is the wrong pair.
+        for command in [
+            ReviewCommand::RequestQueue {
+                file: left,
+                counterpart: right,
+                origin: QueueOrigin::Compare,
+                reviewed: Some(id),
+            },
+            ReviewCommand::KeepBoth {
+                file: left,
+                counterpart: right,
+                reviewed: id,
+            },
+        ] {
+            let status = engine.review(command).status;
+            assert!(mismatch(&status), "{status:?}");
+        }
+        // Queue B and Keep both naming (target, counterpart) resolve: policy
+        // answers them, and the evidence route refuses neither.
+        for command in [
+            ReviewCommand::RequestQueue {
+                file: right,
+                counterpart: left,
+                origin: QueueOrigin::Compare,
+                reviewed: Some(id),
+            },
+            ReviewCommand::KeepBoth {
+                file: right,
+                counterpart: left,
+                reviewed: id,
+            },
+        ] {
+            let status = engine.review(command).status;
+            assert!(
+                !mismatch(&status) && !evidence_missing(&status),
+                "{status:?}"
+            );
+        }
     }
 }

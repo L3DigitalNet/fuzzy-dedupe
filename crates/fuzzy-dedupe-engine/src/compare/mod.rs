@@ -87,7 +87,9 @@ pub struct Comparison {
 /// What a comparison produced.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ComparisonOutcome {
-    /// Side A is the target, side B the counterpart.
+    /// Side A is the counterpart, drawn in the left pane, and side B the
+    /// target, the right pane and the file Queue B names (§11.5), so
+    /// `only_in_b` is the target's §10.1 Unique count.
     Ready(Box<AlignedComparison>),
     /// Nothing can be shown. Presentation states the reason and never
     /// shows a blank pane as if the files were equal (§11.5 rule 9).
@@ -514,7 +516,9 @@ const fn reviewed_pair(request: &ComparisonRequest, model: &AlignedComparison) -
         counterpart_snapshot: request.counterpart_snapshot,
         rules: request.rules,
         mode: request.mode,
-        unique_lines: model.only_in_a.lines.len() as u64,
+        // The target is side B (see `compute`); its Unique count is the one
+        // the review service shows on the target's row after a re-aim.
+        unique_lines: model.only_in_b.lines.len() as u64,
     }
 }
 
@@ -565,7 +569,15 @@ fn validate(scenario: &Scenario, request: &ComparisonRequest) -> Result<(), Unav
     Ok(())
 }
 
-/// Validates `request` against the active scenario and computes it.
+/// Validates `request` against the active scenario and computes it, with
+/// the counterpart as side A and the target as side B.
+///
+/// The orientation is spec §11.5's and frame `13:1304`'s: A is the evidence
+/// anchor on the left, B the file under review on the right, which Queue B
+/// queues. Every reader of the sides (`reviewed_pair`, the diff widget,
+/// Review unique text) depends on it. Rejected: target as side A with the
+/// panes swapped in the widget, which makes the pane letter and the engine
+/// side mean different files.
 fn compute(
     scenario: &Scenario,
     request: ComparisonRequest,
@@ -576,8 +588,8 @@ fn compute(
     let target = text(scenario, request.target)?;
     let counterpart = text(scenario, request.counterpart)?;
     AlignedComparison::compute_until(
-        (request.target, target),
         (request.counterpart, counterpart),
+        (request.target, target),
         request.mode,
         results.rules.ignore,
         superseded,
