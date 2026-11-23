@@ -25,5 +25,14 @@ etcetera = "=0.11.0"
 # enabled, so no GTK system library is linked.
 rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }
 
+# System fallback fonts (spec §8.3 row "fontconfig", plan T21). Linux only:
+# the Windows and macOS adapters will query their own platform font APIs, so
+# the crate is never built for the portability targets. `dlopen` loads
+# libfontconfig at run time instead of linking it, so a build needs no
+# fontconfig development package (no pkg-config probe), and a system without
+# the library degrades to no fallbacks instead of failing to start.
+[target.'cfg(target_os = "linux")'.dependencies]
+fontconfig = { version = "=0.11.0", default-features = false, features = ["dlopen"] }
+
 [lints]
 workspace = true

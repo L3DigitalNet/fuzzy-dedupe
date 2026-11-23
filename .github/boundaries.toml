@@ -67,6 +67,9 @@ proptest = ["fuzzy-dedupe-engine"]
 rfd = ["fuzzy-dedupe-platform"]
 # §8.3 row "etcetera" (MS-1, per-user directories behind the platform adapter).
 etcetera = ["fuzzy-dedupe-platform"]
+# §8.3 row "fontconfig" (MS-1, system fallback fonts behind the platform
+# adapter; a Linux target-specific dependency).
+fontconfig = ["fuzzy-dedupe-platform"]
 
 # R3: GUI crates, which only fuzzy-dedupe-app may declare. `*` entries are
 # shell-style globs over the package name.
