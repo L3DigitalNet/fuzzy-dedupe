@@ -45,12 +45,10 @@ fuzzy-dedupe-platform = { path = "../fuzzy-dedupe-platform" }
 # persistence is not a default and stays off: preferences.toml is the only
 # persisted state (DR-009).
 #
-# Turning defaults off also drops eframe's `winit/default`, and only a direct
-# winit dependency, which has no §8.3 row, could restore it. Two consequences:
-# libwayland is still loaded at run time, not linked, only because
-# smithay-clipboard (from `clipboard`) enables wayland-backend/dlopen; and
-# Wayland windows get winit's fallback frame instead of the Adwaita
-# client-side decorations.
+# Turning defaults off also drops eframe's `winit/default`; the direct winit
+# dependency below restores the one part of it that matters. libwayland is
+# still loaded at run time, not linked, only because smithay-clipboard (from
+# `clipboard`) enables wayland-backend/dlopen.
 eframe = { version = "=0.37.0", default-features = false, features = [
     "accesskit",
     "clipboard",
@@ -67,6 +65,14 @@ egui_extras = { version = "=0.37.0", default-features = false, features = [
     "svg",
 ] }
 egui_table = "=0.11.0"
+# Declared only to enable winit's Adwaita client-side title bar on GNOME
+# Wayland, which eframe's disabled defaults drop (spec §8.3). Pinned to the
+# version eframe =0.37.0 resolves, so the lock gains no second winit.
+# Not `-notitle` (§11.3 needs the window title) and not `-crossfont` (links
+# fontconfig at build time). `wayland` is already on through eframe.
+winit = { version = "=0.30.13", default-features = false, features = [
+    "wayland-csd-adwaita",
+] }
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.2.2"
 tracing = "=0.1.44"
