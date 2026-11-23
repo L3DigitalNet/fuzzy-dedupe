@@ -16,6 +16,17 @@
 //! Queue state is never decided here: the checkbox and Space send a review
 //! command and draw whatever the engine's published view says next frame.
 //!
+//! Menus: the table draws none. A row-menu request (right-click, ⋯, Menu
+//! key, Shift+F10) is returned from [`show`] as a [`RowMenuRequest`], and
+//! the Findings view asks the dialog host for it.
+//!
+//! Scroll offset: `FindingsState::scroll_offset` records the offset of the
+//! table's own scroll area (the one `egui_table` creates) on every frame
+//! the table draws, and is applied to that scroll area once, on the first
+//! frame the table draws after a frame it did not draw. See
+//! [`ScrollProbe`] for how the scroll area is reached and when a restored
+//! offset shows.
+//!
 //! Column widths: `FindingsState::column_widths` is the source of truth.
 //! Each frame writes those widths into `egui_table`'s own stored state
 //! before it draws, and reads back only a drag-resize afterwards. Rejected:
@@ -35,9 +46,7 @@ use crate::presentation::commands::{IntentQueue, UiIntent};
 use crate::presentation::projections::{
     self, FindingsProjection, ProjectionKey, QueueBox, VisibleRow,
 };
-use crate::presentation::state::{
-    ColumnId, FindingsMenu, FindingsState, MenuKind, QueueState, RowId, ScanState,
-};
+use crate::presentation::state::{ColumnId, FindingsState, QueueState, RowId, ScanState};
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 
@@ -225,6 +234,15 @@ pub fn queue_toggle(
     }
 }
 
+/// A row menu the table's input asked for: the view asks the dialog host
+/// to open `MenuKind::Row(row)` at `at`, with focus returning to `invoker`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowMenuRequest {
+    pub row: RowId,
+    pub at: egui::Pos2,
+    pub invoker: Id,
+}
+
 /// What a frame's input asked the table to do, applied after drawing so
 /// the delegate only reads state.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -244,9 +262,11 @@ enum Action {
     CopyPath(FileId),
 }
 
-/// Draws the table into the remaining Findings height. `input_enabled` is
-/// false while a popup or menu is open: the table then reacts to no key, so
-/// no shortcut reaches it under a popup (spec §11.6).
+/// Draws the table into the remaining Findings height and returns the row
+/// menu its input asked for, if any. `input_enabled` is false while a popup
+/// or menu is open: the table then reacts to no key, so no shortcut reaches
+/// it under a popup (spec §11.6).
+#[must_use]
 pub fn show(
     ui: &mut egui::Ui,
     findings: &mut FindingsState,
@@ -254,13 +274,10 @@ pub fn show(
     queue: &QueueState,
     intents: &mut IntentQueue,
     input_enabled: bool,
-) {
-    let Some(results) = scan.results.clone() else {
-        return;
-    };
-    let Some(projection) = refresh_projection(findings, scan, queue) else {
-        return;
-    };
+) -> Option<RowMenuRequest> {
+    let results = scan.results.clone()?;
+    let projection = refresh_projection(findings, scan, queue)?;
+    let restoring = note_drawn(ui.ctx());
     ensure_glyphs(ui.ctx());
     let palette = theme::palette(mode_of(ui.ctx()));
     let window_width = ui.ctx().content_rect().width();
@@ -275,22 +292,8 @@ pub fn show(
     }
     let focused_widget = ui.memory(egui::Memory::focused);
     let keys_for_table = input_enabled && focused_widget.is_none_or(|id| id == table_id());
-    let mut menu_from_keyboard = false;
-    if keys_for_table {
-        // Keep the arrows for row focus instead of egui's focus movement.
-        ui.memory_mut(|m| {
-            m.set_focus_lock_filter(
-                table_id(),
-                egui::EventFilter {
-                    horizontal_arrows: true,
-                    vertical_arrows: true,
-                    tab: false,
-                    escape: false,
-                },
-            );
-        });
-        menu_from_keyboard = read_keys(ui, findings, &projection, &results, page, &mut actions);
-    }
+    let menu_from_keyboard =
+        keys_for_table && table_keys(ui, findings, &projection, &results, page, &mut actions);
 
     let reveal = std::mem::take(&mut findings.reveal_focus);
     let focused_pos = findings.focused.and_then(|row| projection.position(row));
@@ -314,6 +317,10 @@ pub fn show(
     }
 
     let table_focused = ui.memory(|m| m.has_focus(table_id()));
+    let scroll = ScrollProbe {
+        restore: restoring.then_some(findings.scroll_offset),
+        area: None,
+    };
     let mut delegate = Delegate {
         results: &results,
         projection: &projection,
@@ -324,6 +331,7 @@ pub fn show(
         table_focused,
         actions: &mut actions,
         row_rects: HashMap::new(),
+        scroll,
     };
     ui.painter().rect(
         outer,
@@ -346,8 +354,15 @@ pub fn show(
         )
         .inner;
     let row_rects = std::mem::take(&mut delegate.row_rects);
+    let scroll_area = delegate.scroll.area;
 
     read_widths(ui, state_id, findings, &columns);
+    // Not on a restoring pass: its scroll area still holds the old offset,
+    // and recording that would overwrite the offset being restored. Later
+    // passes record the restored one once the area has reached it.
+    if !restoring && let Some(offset) = ScrollProbe::offset(ui.ctx(), scroll_area) {
+        findings.scroll_offset = offset;
+    }
 
     if menu_from_keyboard && let Some(row @ RowId::Member { .. }) = findings.focused {
         let at = row_rects.get(&row).map_or(outer.left_top(), |rect| {
@@ -360,7 +375,121 @@ pub fn show(
         });
     }
     if input_enabled {
-        apply(ui, findings, &results, queue, intents, actions);
+        apply(findings, &results, queue, intents, actions)
+    } else {
+        None
+    }
+}
+
+/// Takes the arrow keys for row focus instead of egui's focus movement and
+/// reads the §11.10 Findings keys; returns whether a row menu was asked for.
+fn table_keys(
+    ui: &Ui,
+    findings: &mut FindingsState,
+    projection: &FindingsProjection,
+    results: &ScanResults,
+    page: usize,
+    actions: &mut Vec<Action>,
+) -> bool {
+    ui.memory_mut(|m| {
+        m.set_focus_lock_filter(
+            table_id(),
+            egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                tab: false,
+                escape: false,
+            },
+        );
+    });
+    read_keys(ui, findings, projection, results, page, actions)
+}
+
+/// Records that the table draws in this pass, and returns whether it did
+/// not draw in the pass before: the view is being restored (the return
+/// from Compare, or rows shown again after a state message), so the
+/// recorded offset is applied.
+fn note_drawn(ctx: &egui::Context) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    let key = table_id().with("drawn_pass");
+    let last = ctx.data_mut(|d| {
+        let last = d.get_temp::<u64>(key);
+        d.insert_temp(key, pass);
+        last
+    });
+    last.is_none_or(|last| last.saturating_add(1) < pass)
+}
+
+/// Reaches the scroll area `egui_table` creates for the body, which it
+/// does not expose: from the first body row drawn, the nearest enclosing
+/// `UiKind::ScrollArea` node of the `Ui` stack is that area's content, and
+/// the area's state ID is its parent's scope ID salted the way
+/// `egui::ScrollArea` salts an area without an `id_salt`. Rejected:
+/// spelling out `egui_table`'s chain of child scopes, which a version bump
+/// would silently break; the stack walk finds the area whatever lies
+/// between.
+///
+/// Restoring goes through egui's scroll delta with no animation, the only
+/// way to move an area's offset from outside (`State`'s offset has no
+/// setter). The area `egui_table` builds is animated, so the delta becomes
+/// a zero-length scroll target that the area reaches at the start of its
+/// next pass, after that pass has already placed its content. The
+/// restoring pass is therefore discarded, so its rerun reaches the target
+/// within the restoring frame and the next frame draws at it; without the
+/// discard a changed offset would show only two frames after the restore.
+/// egui allows one discard per frame, so when another discard already ran
+/// this frame (`egui_table`'s first-draw sizing pass) it shows one frame
+/// later still. The first restored frame is exact whenever the
+/// recorded offset is the one the area last drew, which holds for every
+/// return that writes no new offset while the table is hidden (the IR-001
+/// return from Compare): the area keeps its state across frames it is not
+/// drawn, and this delta is then zero.
+struct ScrollProbe {
+    /// The offset to apply, on a restoring pass, until applied.
+    restore: Option<f32>,
+    /// The body's scroll area state ID, once a row found it.
+    area: Option<Id>,
+}
+
+impl ScrollProbe {
+    /// The vertical offset `area` holds, clamped to its content.
+    fn offset(ctx: &egui::Context, area: Option<Id>) -> Option<f32> {
+        egui::scroll_area::State::load(ctx, area?).map(|stored| stored.clamped_offset().y)
+    }
+
+    fn visit(&mut self, ui: &Ui) {
+        if self.area.is_none() {
+            self.area = ui
+                .stack()
+                .iter()
+                .find(|node| node.kind() == Some(egui::UiKind::ScrollArea))
+                .and_then(|content| content.parent.as_ref())
+                .map(|area| area.scope_id.with(egui::IdSalt::new("scroll_area")));
+        }
+        let Some(target) = self.restore.take() else {
+            return;
+        };
+        let Some(current) = self
+            .area
+            .and_then(|area| egui::scroll_area::State::load(ui.ctx(), area))
+            .map(|stored| stored.unclamped_offset().y)
+        else {
+            return;
+        };
+        // Exact on purpose: the round trip must restore the very value
+        // recorded, and an equal offset needs no move.
+        #[expect(clippy::float_cmp, reason = "an exact restore of a recorded value")]
+        let moved = current != target;
+        if moved {
+            // egui's scroll delta is the content's movement: the opposite
+            // sign of the offset change.
+            ui.scroll_with_delta_animation(
+                egui::vec2(0.0, current - target),
+                egui::style::ScrollAnimation::none(),
+            );
+            ui.ctx()
+                .request_discard("restore the Findings table's scroll offset");
+        }
     }
 }
 
@@ -490,16 +619,17 @@ fn read_keys(
     menu && matches!(focused, RowId::Member { .. })
 }
 
-/// Carries out the frame's actions. Queue intents name the control that
-/// sent them, so a `NeedsReview` popup returns focus there.
+/// Carries out the frame's actions and returns the row menu asked for.
+/// Queue intents name the control that sent them, so a `NeedsReview` popup
+/// returns focus there.
 fn apply(
-    ui: &Ui,
     findings: &mut FindingsState,
     results: &ScanResults,
     queue: &QueueState,
     intents: &mut IntentQueue,
     actions: Vec<Action>,
-) {
+) -> Option<RowMenuRequest> {
+    let mut row_menu = None;
     for action in actions {
         match action {
             Action::Focus(row) => findings.focused = Some(row),
@@ -539,21 +669,11 @@ fn apply(
             }
             Action::RowMenu { row, at, invoker } => {
                 findings.focused = Some(row);
-                let kind = MenuKind::Row(row);
-                findings.menu = Some(FindingsMenu {
-                    kind,
-                    anchor: at,
-                    opened_pass: ui.ctx().cumulative_pass_nr(),
-                    fresh: true,
-                    choosing_columns: false,
-                });
-                intents.push(UiIntent::ToggleMenu {
-                    kind,
-                    invoker: Some(invoker),
-                });
+                row_menu = Some(RowMenuRequest { row, at, invoker });
             }
         }
     }
+    row_menu
 }
 
 /// The member file at `row` and its evidence, if `row` is a member row of
@@ -590,6 +710,7 @@ struct Delegate<'a> {
     table_focused: bool,
     actions: &'a mut Vec<Action>,
     row_rects: HashMap<RowId, Rect>,
+    scroll: ScrollProbe,
 }
 
 impl Delegate<'_> {
@@ -649,6 +770,7 @@ impl TableDelegate for Delegate<'_> {
     }
 
     fn row_ui(&mut self, ui: &mut Ui, row_nr: u64) {
+        self.scroll.visit(ui);
         let Some(row) = self.row(row_nr) else {
             return;
         };

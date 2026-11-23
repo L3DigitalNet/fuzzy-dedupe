@@ -49,8 +49,8 @@
 //!    the current snapshots and rules (§11.5 "never show stale results as
 //!    current"); both refuse as `EvidenceMismatch`. See `usable_counterpart`.
 //! 5. *Queue identical copies is conservative per member* (§11.4: "It queues
-//!    only files whose bytes match their reference exactly"); see
-//!    `queue_identical`.
+//!    only files whose bytes match their reference exactly"); the rule is
+//!    the exported forecast in `forecast.rs`, see `queue_identical`.
 //! 6. *"Rows that need it show Review first"* (§11.4) until a valid
 //!    acknowledgment exists; see `row`. A row needs it exactly when its
 //!    match against its current counterpart is not Same bytes and its
@@ -83,9 +83,10 @@ use fuzzy_dedupe_domain::{
     CounterpartBasis, CounterpartLink, DecisionBinding, DecisionKind, EvidenceUpdate, FileId,
     Group, GroupId, InvalidatedDecision, Measurement, MemberDecision, MemberRole, QueueOrigin,
     QueueScope, QueuedTarget, Refusal, ReviewedPair, RulesRevision, ScanId, ScanResults,
-    SnapshotId, ValidationView, Verification, rule_counterpart,
+    SnapshotId, ValidationView, rule_counterpart,
 };
 
+use super::forecast::{self, ForecastFacts};
 use super::{FileReviewState, ReviewCommand, ReviewOutcome, ReviewStatus};
 
 /// Lookup tables derived once per loaded scan.
@@ -510,54 +511,33 @@ impl ReviewState {
         })
     }
 
-    /// Queue identical copies (spec §11.4): per member, only one whose
-    /// counterpart is its group's reference and whose edge to it is Same
-    /// bytes with bytes compared equal. A hash match alone is not "bytes
-    /// match their reference exactly". Reference, protected, kept and
-    /// already queued members are skipped, and so is any member FR-025
-    /// would refuse. Skips are silent: the popup counted the eligible files
-    /// beforehand.
+    /// Queue identical copies (spec §11.4). The eligibility rule is
+    /// [`forecast::queue_identical`], evaluated on the state before the
+    /// command; exactly the files it returns are queued, each against its
+    /// reference, and nothing else changes. The popup states its count and
+    /// size from the same function over the presentation read model, so
+    /// the two cannot diverge. Skips are silent.
+    ///
+    /// Rejected: the rule inline here with a copy in the popup. The copy
+    /// could not see a Compare re-aim and over-counted by one (plan T33).
     fn queue_identical(&mut self, scope: &QueueScope) -> ReviewOutcome {
         let catalog = Arc::clone(&self.catalog.0);
-        let groups: BTreeSet<usize> = match scope {
-            QueueScope::AllByteIdenticalGroups => (0..catalog.results.groups.len()).collect(),
-            QueueScope::Groups(ids) => ids
-                .iter()
-                .filter_map(|g| catalog.groups_by_id.get(g).copied())
-                .collect(),
-        };
+        let take = forecast::queue_identical(&catalog.results, scope, &*self).files;
+        let groups: BTreeSet<usize> = forecast::scope_groups(&catalog.results, scope)
+            .map(|(index, _)| index)
+            .collect();
         self.commit(&groups, |s, _| {
-            let mut files = 0;
-            for &group in &groups {
-                let reference = s.references[group];
-                for m in &catalog.results.groups[group].members {
-                    let file = m.file;
-                    let eligible = file != reference
-                        && !s.is_protected(file)
-                        && !s.kept.contains_key(&file)
-                        && !s.queue.contains_key(&file)
-                        && !s.queue.contains_key(&reference)
-                        && s.counterpart(group, file) == Some(reference)
-                        && s.group(group)
-                            .edge_between(file, reference)
-                            .is_some_and(|e| {
-                                e.measurement == Measurement::Identical(Verification::ByteVerified)
-                            })
-                        && !s.is_counterpart_of_queued(group, file);
-                    if eligible {
-                        let binding = s.binding(file);
-                        s.queue.insert(
-                            file,
-                            Approval {
-                                binding,
-                                origin: None,
-                            },
-                        );
-                        files += 1;
-                    }
-                }
+            for &file in &take {
+                let binding = s.binding(file);
+                s.queue.insert(
+                    file,
+                    Approval {
+                        binding,
+                        origin: None,
+                    },
+                );
             }
-            ReviewStatus::Queued { files }
+            ReviewStatus::Queued { files: take.len() }
         })
     }
 
@@ -948,5 +928,34 @@ impl ReviewState {
             role: link.map_or(MemberRole::Reference, MemberRole::Member),
             decision,
         }
+    }
+}
+
+/// The service's own answers to the forecast, so `queue_identical` queues
+/// what the forecast computes on exactly this state. Presentation's read
+/// model implements the same trait from outcomes and the published view.
+impl ForecastFacts for ReviewState {
+    fn reference(&self, group: &Group) -> Option<FileId> {
+        let index = *self.catalog.0.groups_by_id.get(&group.id)?;
+        Some(self.references[index])
+    }
+
+    fn counterpart(&self, group: &Group, file: FileId) -> Option<FileId> {
+        let index = *self.catalog.0.groups_by_id.get(&group.id)?;
+        self.counterpart(index, file)
+    }
+
+    // Calls the inherent `ReviewState::is_protected`: inherent methods win
+    // method resolution over trait methods, so this does not recurse.
+    fn is_protected(&self, file: FileId) -> bool {
+        self.is_protected(file)
+    }
+
+    fn is_kept(&self, file: FileId) -> bool {
+        self.kept.contains_key(&file)
+    }
+
+    fn queued_counterpart(&self, file: FileId) -> Option<FileId> {
+        self.queue.get(&file).map(|a| a.binding.counterpart)
     }
 }

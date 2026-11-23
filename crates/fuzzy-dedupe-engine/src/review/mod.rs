@@ -27,8 +27,10 @@ use fuzzy_dedupe_domain::{
 
 use crate::service::{EngineModule, NotImplemented};
 
+pub mod forecast;
 mod policy;
 
+pub use forecast::{ForecastFacts, IdenticalForecast};
 use policy::ReviewState;
 
 /// The C-05 operations. Every one runs synchronously on the UI thread.

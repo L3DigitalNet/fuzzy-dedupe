@@ -20,7 +20,7 @@
 //!   directories;
 //! - [`log_retention`]: age-based expiry of the application's own logs
 //!   (plan D-015);
-//! - [`fonts`]: system fallback-font lookup, a stub until plan T21.
+//! - [`fonts`]: fontconfig fallback fonts for scripts the embedded faces lack.
 //!
 //! No-mutation confinement (plan C-09): `app_files`, `log_retention` and
 //! `open` are the only modules in the workspace allowed to make the

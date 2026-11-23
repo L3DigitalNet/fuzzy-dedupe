@@ -146,6 +146,11 @@ pub fn install_results(
     state.scan.results = Some(results);
     state.queue = QueueState::default();
     state.findings.scan = state.scan.scan;
+    // Group titles are design-scenario fixture data (spec §11.1) that only
+    // `app::adopt_scenario` installs, after this call. A scan's group IDs
+    // can equal the adopted scenario's, so a title left behind would name
+    // a group of these results.
+    state.findings.group_titles.clear();
     state.findings.revision += 1;
 }
 
@@ -208,9 +213,15 @@ pub fn note_submitted(state: &mut PresentationState, origin: Origin, request: &E
 /// Mirrors a review outcome into the queue read model (plan D-003): the
 /// engine decided, presentation only records it. Queue membership itself
 /// comes from the published view ([`sync_view`]), the single authority.
+///
+/// Every row the outcome names gets its reported decision and role; a row
+/// it does not name keeps both. The roles are what Findings labels and the
+/// Queue identical copies forecast read, so dropping one here would leave
+/// a Compare-chosen counterpart invisible to both (plan T33).
 pub fn apply_review(state: &mut PresentationState, outcome: &ReviewOutcome) {
     for row in &outcome.changed {
         state.queue.decisions.insert(row.file, row.decision);
+        state.queue.roles.insert(row.file, row.role);
     }
     match outcome.status {
         ReviewStatus::Refused { file, refusal } => {
@@ -228,6 +239,29 @@ pub fn apply_review(state: &mut PresentationState, outcome: &ReviewOutcome) {
         _ => {}
     }
     state.findings.revision += 1;
+}
+
+/// Mirrors the outcome of a Queue identical copies command, as
+/// [`apply_review`] does, and reports how many files it queued: one Info
+/// status line, "N files queued.", for N > 0. Nothing is reported for 0,
+/// which the popup already stated before sending the command.
+///
+/// Separate from [`apply_review`] because a bulk result of one file and a
+/// single queue request's result are the same `Queued { files: 1 }`
+/// outcome; only the caller, which holds the command, can tell them apart,
+/// and a single request's result must keep setting no status line.
+pub fn apply_bulk_review(state: &mut PresentationState, outcome: &ReviewOutcome) {
+    apply_review(state, outcome);
+    if let ReviewStatus::Queued { files } = outcome.status
+        && files > 0
+    {
+        let noun = if files == 1 { "file" } else { "files" };
+        status(
+            state,
+            Severity::Info,
+            format!("{} {noun} queued.", projections::thousands(files as u64)),
+        );
+    }
 }
 
 /// Replaces the queue read model with the engine's published view: the

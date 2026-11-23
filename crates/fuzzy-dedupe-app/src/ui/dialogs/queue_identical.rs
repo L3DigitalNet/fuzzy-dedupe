@@ -20,11 +20,15 @@
 //! `AllByteIdenticalGroups` means the filter hides none. The popup opens on
 //! "All byte-identical groups", as the frame does.
 //!
-//! Cross-file contract with `fuzzy-dedupe-engine/src/review/policy.rs`
-//! (`ReviewState::queue_identical`): [`forecast`] mirrors that eligibility
-//! rule term for term. An edit to either must update the other, or the
-//! popup's "Queue N files" stops matching what the service queues
-//! (PV-T17-002 pins the equality).
+//! The rule itself is not here. [`forecast`] calls the engine's exported
+//! eligibility forecast (`fuzzy_dedupe_engine::review::forecast`) over the
+//! read model, and the review service queues exactly what the same function
+//! returns on its own state, so the popup's "Queue N files" cannot drift
+//! from what is queued (PV-T33-002). No eligibility condition may be added
+//! to this crate: one that the service does not share is how the stated
+//! count went wrong before (plan T33). What the read model must mirror for
+//! the two to agree is `QueueState`'s `ForecastFacts` impl in
+//! `presentation/state.rs`.
 //!
 //! This file also holds the small pieces both T17 popups draw with
 //! (`current_reference`, the footer, the tinted icon and the text helper);
@@ -33,9 +37,8 @@
 use std::sync::Arc;
 
 use egui::{Color32, Id, Margin, RichText, Stroke, Vec2};
-use fuzzy_dedupe_domain::{
-    CounterpartBasis, FileId, Group, Measurement, MemberDecision, QueueScope, ScanId, Verification,
-};
+use fuzzy_dedupe_domain::{FileId, Group, QueueScope, ScanId, ScanResults};
+use fuzzy_dedupe_engine::review::{IdenticalForecast, forecast as eligibility};
 use fuzzy_dedupe_engine::service::ReviewCommand;
 
 use crate::presentation::commands::UiIntent;
@@ -54,27 +57,14 @@ pub enum ScopeChoice {
     Shown,
 }
 
-/// What Queue identical copies would queue in one scope.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Forecast {
-    /// Files the review service will queue.
-    pub files: usize,
-    /// Groups those files belong to.
-    pub groups: usize,
-    /// Their total size in bytes.
-    pub bytes: u64,
-    /// Groups in scope holding any byte-verified exact copy of their
-    /// reference, the count each scope's radio states.
-    pub identical_groups: usize,
-}
-
 /// The forecast for both scopes, computed once per read-model change: a
-/// 100,000-row scan is not walked on every frame the popup is open.
+/// 100,000-row scan is not walked on every frame the popup is open. Shared
+/// so a frame reads it without copying either file list.
 #[derive(Clone, Debug, PartialEq)]
 struct Cached {
     key: CacheKey,
-    all: Forecast,
-    shown: Forecast,
+    all: IdenticalForecast,
+    shown: IdenticalForecast,
 }
 
 /// Everything the forecast reads changes one of these: results and review
@@ -93,7 +83,7 @@ struct CacheKey {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Draft {
     pub choice: ScopeChoice,
-    cached: Option<Cached>,
+    cached: Option<Arc<Cached>>,
 }
 
 /// The draft for a newly opened popup. Queues nothing: the forecast is
@@ -109,7 +99,8 @@ pub fn open(cx: &mut DialogCx<'_>) -> Draft {
 pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
     let ctx = ui.ctx().clone();
     let palette = theme::palette(dialog_host::mode_of(&ctx));
-    let (all, shown) = refresh(draft, cx);
+    let cached = refresh(draft, cx);
+    let (all, shown) = (&cached.all, &cached.shown);
     let mut response = DialogResponse::KeepOpen;
 
     ui.spacing_mut().item_spacing = Vec2::new(8.0, 12.0);
@@ -176,13 +167,13 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
         Token::Ink,
     ));
 
-    let queue_label = format!("Queue {}", files(forecast.files));
+    let queue_label = format!("Queue {}", files(forecast.files.len()));
     if footer(
         ui,
         palette,
         &queue_label,
         true,
-        forecast.files > 0,
+        !forecast.files.is_empty(),
         &mut response,
     ) {
         response = submit(draft, cx);
@@ -194,12 +185,12 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
 /// primary button: queue the forecast scope through the review service.
 /// With nothing to queue it sends nothing and stays open.
 pub fn submit(draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
-    let (all, shown) = refresh(draft, cx);
+    let cached = refresh(draft, cx);
     let (forecast, scope) = match draft.choice {
-        ScopeChoice::All => (all, QueueScope::AllByteIdenticalGroups),
-        ScopeChoice::Shown => (shown, shown_scope(cx.subject)),
+        ScopeChoice::All => (&cached.all, QueueScope::AllByteIdenticalGroups),
+        ScopeChoice::Shown => (&cached.shown, shown_scope(cx.subject)),
     };
-    if forecast.files == 0 {
+    if forecast.files.is_empty() {
         return DialogResponse::KeepOpen;
     }
     cx.intents.push(UiIntent::Review {
@@ -227,117 +218,47 @@ fn shown_scope(subject: &DialogSubject) -> QueueScope {
 }
 
 /// Both scopes' forecasts, recomputed only when the read model changed.
-fn refresh(draft: &mut Draft, cx: &DialogCx<'_>) -> (Forecast, Forecast) {
+fn refresh(draft: &mut Draft, cx: &DialogCx<'_>) -> Arc<Cached> {
     let key = CacheKey {
         scan: cx.scan.scan,
         revision: cx.findings.revision,
         view: cx.queue.view.as_ref().map(|v| Arc::as_ptr(v).addr()),
     };
     if let Some(cached) = draft.cached.as_ref().filter(|c| c.key == key) {
-        return (cached.all, cached.shown);
+        return Arc::clone(cached);
     }
     let (all, shown) = match cx.scan.results.as_deref() {
-        None => (Forecast::default(), Forecast::default()),
+        None => (IdenticalForecast::default(), IdenticalForecast::default()),
         Some(results) => {
-            let all = forecast(results.groups.iter(), cx.queue);
+            let all = forecast(results, &QueueScope::AllByteIdenticalGroups, cx.queue);
             let shown = match shown_scope(cx.subject) {
-                QueueScope::AllByteIdenticalGroups => all,
-                QueueScope::Groups(ids) => forecast(
-                    results.groups.iter().filter(|g| ids.contains(&g.id)),
-                    cx.queue,
-                ),
+                QueueScope::AllByteIdenticalGroups => all.clone(),
+                scope @ QueueScope::Groups(_) => forecast(results, &scope, cx.queue),
             };
             (all, shown)
         }
     };
-    draft.cached = Some(Cached { key, all, shown });
-    (all, shown)
+    let cached = Arc::new(Cached { key, all, shown });
+    draft.cached = Some(Arc::clone(&cached));
+    cached
 }
 
-/// The group's current reference by the read model: a row the review
-/// service reported as Reference, else the scan's own reference for rows it
-/// never reported (an unreported row has not changed since the scan).
+/// The group's current reference by the recorded roles
+/// ([`QueueState::reference`]).
 pub(crate) fn current_reference(group: &Group, queue: &QueueState) -> Option<FileId> {
-    group
-        .members
-        .iter()
-        .find(|m| match queue.decisions.get(&m.file) {
-            Some(decision) => *decision == MemberDecision::Reference,
-            None => m.is_reference(),
-        })
-        .map(|m| m.file)
+    queue.reference(group)
 }
 
-/// What Queue identical copies will queue over `groups`, by the review
-/// service's per-member rule (`ReviewState::queue_identical`): a member is
-/// taken only when it is not the reference, not protected, not kept, not
-/// queued, not the counterpart of a queued file, its counterpart is the
-/// reference, and its edge to the reference is Same bytes with bytes
-/// compared equal. A hash match alone is not "bytes match their reference
-/// exactly" (§11.4).
-///
-/// The counterpart term has one blind spot: the read model does not carry
-/// a counterpart chosen by reviewing in Compare. Rows whose decision proves
-/// a non-reference counterpart (Review first, Counterpart queued: an exact
-/// copy of the reference needs no review, and the reference is never
-/// queued) and scan-loaded Compare choices are excluded; an Unreviewed row
-/// re-aimed in Compare onto a member it needs no review against is not
-/// visible here and would be over-counted by one.
+/// What Queue identical copies will queue over `scope`: the engine's
+/// eligibility forecast evaluated over the read model. The popup's count,
+/// file set and size come only from here.
 #[must_use]
-pub fn forecast<'a>(groups: impl Iterator<Item = &'a Group>, queue: &QueueState) -> Forecast {
-    let view = queue.view.as_deref();
-    let protected = |file: &FileId| view.is_some_and(|v| v.is_protected(*file));
-    let queued = |file: &FileId| view.is_some_and(|v| v.queued(*file).is_some());
-    // FR-025: "Counterpart of a queued file". Counterparts never cross
-    // groups, so one scan-wide set is the group-local check.
-    let counterparts_of_queued: Vec<FileId> = view
-        .map(|v| v.queue.iter().map(|q| q.counterpart).collect())
-        .unwrap_or_default();
-    let mut out = Forecast::default();
-    for group in groups {
-        let Some(reference) = current_reference(group, queue) else {
-            continue;
-        };
-        let scan_reference = group.reference().map(|m| m.file);
-        let exact = |file: FileId| {
-            group.edge_between(file, reference).is_some_and(|e| {
-                e.measurement == Measurement::Identical(Verification::ByteVerified)
-            })
-        };
-        let mut taken = 0;
-        let mut identical = false;
-        for m in &group.members {
-            let file = m.file;
-            if file == reference || !exact(file) {
-                continue;
-            }
-            identical = true;
-            let decision = queue.decisions.get(&file).copied();
-            // Make this the reference discards Compare choices, so a loaded
-            // one only holds while the scan's reference is still current.
-            let loaded_choice = scan_reference == Some(reference)
-                && m.link()
-                    .is_some_and(|l| l.basis == CounterpartBasis::ReviewedInCompare);
-            let eligible = !protected(&file)
-                && decision != Some(MemberDecision::Kept)
-                && !queued(&file)
-                && !queued(&reference)
-                && !counterparts_of_queued.contains(&file)
-                && !matches!(
-                    decision,
-                    Some(MemberDecision::ReviewFirst | MemberDecision::CounterpartQueued)
-                )
-                && !loaded_choice;
-            if eligible {
-                taken += 1;
-                out.bytes += m.size_bytes;
-            }
-        }
-        out.files += taken;
-        out.groups += usize::from(taken > 0);
-        out.identical_groups += usize::from(identical);
-    }
-    out
+pub fn forecast(
+    results: &ScanResults,
+    scope: &QueueScope,
+    queue: &QueueState,
+) -> IdenticalForecast {
+    eligibility::queue_identical(results, scope, queue)
 }
 
 /// A size in binary units, one decimal, rounded to nearest (spec §11.4
@@ -377,13 +298,13 @@ fn groups(n: usize) -> String {
     }
 }
 
-fn summary(forecast: Forecast) -> String {
-    if forecast.files == 0 {
+fn summary(forecast: &IdenticalForecast) -> String {
+    if forecast.files.is_empty() {
         return "No identical copies to queue in this scope.".to_owned();
     }
     format!(
         "{} in {} will be queued · {}",
-        files(forecast.files),
+        files(forecast.files.len()),
         groups(forecast.groups),
         binary_size(forecast.bytes)
     )

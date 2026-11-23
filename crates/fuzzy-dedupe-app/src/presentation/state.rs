@@ -20,15 +20,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fuzzy_dedupe_domain::{
-    CleanupPlan, CompareMode, DecisionBinding, FileId, GroupId, MatchingRules, MemberDecision,
-    PlanItem, PlanRevision, QueueOrigin, QueueScope, Refusal, RelationKind, RequestId,
-    RulesRevision, ScanId, ScanIssue, ScanProgress, ScanResults, ScanSetup, SnapshotId,
-    ValidationView,
+    CleanupPlan, CompareMode, DecisionBinding, FileId, Group, GroupId, MatchingRules, Member,
+    MemberDecision, MemberRole, PlanItem, PlanRevision, QueueOrigin, QueueScope, Refusal,
+    RelationKind, RequestId, RulesRevision, ScanId, ScanIssue, ScanProgress, ScanResults,
+    ScanSetup, SnapshotId, ValidationView,
 };
 use fuzzy_dedupe_engine::cleanup_sim::{DialogStatus, RunReport, RunSummary, confirmed_count};
 use fuzzy_dedupe_engine::compare::{
     AlignedComparison, Comparison, ComparisonOutcome, ComparisonRequest, Unavailable,
 };
+use fuzzy_dedupe_engine::review::ForecastFacts;
 
 use crate::ui::dialogs::DialogDraft;
 use crate::ui::theme::Zoom;
@@ -127,7 +128,14 @@ pub struct FindingsState {
     pub focused: Option<RowId>,
     /// Widths the user changed; a missing column uses its reference width.
     pub column_widths: BTreeMap<ColumnId, f32>,
-    /// Vertical scroll offset of the table body, in units.
+    /// Vertical scroll offset of the table body, in logical units, as the
+    /// table's own scroll area last reported it. `grouped_table` records
+    /// it on every frame the table draws, and applies it once on the first
+    /// frame the table draws again after a frame it did not draw (a view
+    /// restore, such as the return from Compare). The restored table shows
+    /// the recorded offset on that first frame; a different value written
+    /// while the table is hidden shows from the frame after (see
+    /// `grouped_table::ScrollProbe`).
     pub scroll_offset: f32,
     // View state outside the return context (plan T13).
     /// Optional columns hidden through Actions ▾ → Choose columns….
@@ -136,10 +144,6 @@ pub struct FindingsState {
     /// as the design scenario's "Project plan". A group without one shows
     /// its reference's file name.
     pub group_titles: BTreeMap<GroupId, String>,
-    /// The Findings menu this view asked the dialog host to open, mirrored
-    /// here because [`crate::ui::WorkspaceCx`] carries no dialog state; see
-    /// [`FindingsMenu`] for when the mirror is trusted.
-    pub menu: Option<FindingsMenu>,
     /// The discovery-problem list (frame 01c) is expanded.
     pub show_issues: bool,
     /// The group of Compare's current pair, whose header reads "Last
@@ -151,29 +155,6 @@ pub struct FindingsState {
     /// The visible-row projection, rebuilt only when its inputs change
     /// (spec §11.9), never per frame.
     pub projection: Option<Arc<crate::presentation::projections::FindingsProjection>>,
-}
-
-/// A Findings menu (Actions ▾, Sort ▾ or a row menu) as the view requested
-/// it from the dialog host.
-///
-/// The dialog host owns the single overlay slot, but the view only learns
-/// whether *some* overlay is open (`input_enabled`). The view therefore
-/// records the menu it asked for and draws it only while an overlay is open
-/// and no modal popup is; the record is dropped the first frame input is
-/// enabled again, which is how an Esc or a dispatch-side close reaches it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FindingsMenu {
-    pub kind: MenuKind,
-    /// The menu's top-left corner, in units.
-    pub anchor: egui::Pos2,
-    /// The egui pass that requested it. Input is still enabled in that
-    /// pass (the open is dispatched after it), so only a later pass with
-    /// input enabled means the menu was closed.
-    pub opened_pass: u64,
-    /// The menu has not drawn yet: its first item takes keyboard focus.
-    pub fresh: bool,
-    /// Choose columns… is expanded inside Actions ▾.
-    pub choosing_columns: bool,
 }
 
 /// A text position inside one Compare pane: an aligned row and a character
@@ -557,6 +538,15 @@ pub struct QueueState {
     /// Each reviewed file's review and protection state (the Decision
     /// column), from the latest outcome that changed it.
     pub decisions: BTreeMap<FileId, MemberDecision>,
+    /// Each file's current role, reference or member with its counterpart
+    /// and evidence, as the latest review outcome naming that file reported
+    /// it. Make this the reference and a Compare review change roles
+    /// without touching the immutable results, so a file no outcome has
+    /// named still has the role the results give it. Written only by
+    /// `events::apply_review`; a new scan's results reset it with the rest
+    /// of this owner (`events::install_results`). Read through
+    /// [`QueueState::role`], never derived from decisions or queue entries.
+    pub roles: BTreeMap<FileId, MemberRole>,
     /// The engine's newest published validation view: current snapshots,
     /// rules revision, protected files and the queue with its bindings.
     /// Comparison requests and stale-evidence checks read snapshots here.
@@ -589,6 +579,65 @@ impl QueueState {
             .as_ref()
             .is_some_and(|view| view.is_protected(file))
             || self.decisions.get(&file) == Some(&MemberDecision::Protected)
+    }
+
+    /// `member`'s current role: the one the review service last reported
+    /// for it, else the results' own.
+    #[must_use]
+    pub fn role(&self, member: &Member) -> MemberRole {
+        self.roles.get(&member.file).copied().unwrap_or(member.role)
+    }
+
+    /// The group's current reference: the member whose current role is
+    /// Reference. Make this the reference reports both the old and the new
+    /// reference, so exactly one member holds the role. A malformed group
+    /// with none falls back to its first member, as the review service does.
+    #[must_use]
+    pub fn reference(&self, group: &Group) -> Option<FileId> {
+        group
+            .members
+            .iter()
+            .find(|m| matches!(self.role(m), MemberRole::Reference))
+            .or_else(|| group.members.first())
+            .map(|m| m.file)
+    }
+}
+
+/// The read model's answers to the Queue identical copies forecast
+/// (`fuzzy_dedupe_engine::review::forecast`). The popup states what the
+/// review service will queue only while these agree with the service's own
+/// answers (`ReviewState` in the engine's `review/policy.rs`), so each one
+/// reads a mirror of an outcome, the published view or the results, never
+/// a local guess.
+impl ForecastFacts for QueueState {
+    fn reference(&self, group: &Group) -> Option<FileId> {
+        Self::reference(self, group)
+    }
+
+    fn counterpart(&self, group: &Group, file: FileId) -> Option<FileId> {
+        if Self::reference(self, group) == Some(file) {
+            return None;
+        }
+        match self.role(group.member(file)?) {
+            MemberRole::Reference => None,
+            MemberRole::Member(link) => Some(link.counterpart),
+        }
+    }
+
+    fn is_protected(&self, file: FileId) -> bool {
+        Self::is_protected(self, file)
+    }
+
+    /// A Kept file that is also protected reads as Protected here, the
+    /// Decision column's precedence, and so as not kept. The forecast
+    /// cannot tell the difference: it skips a protected file whatever its
+    /// Kept state.
+    fn is_kept(&self, file: FileId) -> bool {
+        self.decisions.get(&file) == Some(&MemberDecision::Kept)
+    }
+
+    fn queued_counterpart(&self, file: FileId) -> Option<FileId> {
+        self.entries.get(&file).map(|entry| entry.counterpart)
     }
 }
 
