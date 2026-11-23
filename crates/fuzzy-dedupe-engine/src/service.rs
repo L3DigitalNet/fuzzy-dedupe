@@ -563,7 +563,7 @@ pub struct Engine {
     evidence: ComparisonEvidence,
     validation: ValidationBoard,
     plan_revisions: PlanRevisions,
-    review: ReviewService,
+    review: Review,
     next_scan: u64,
     /// The highest scan ID started or adopted. `adopt_scenario` refuses any
     /// ID at or below it, so a late event of an earlier scan can never be
@@ -589,6 +589,18 @@ impl Engine {
     /// Returns the operating system's error when the thread cannot be
     /// spawned.
     pub fn new(config: EngineConfig) -> std::io::Result<Self> {
+        Self::with_modules(config, Services::new)
+    }
+
+    /// [`Engine::new`] with the dispatcher's module services built by
+    /// `modules`, on the dispatcher thread, from the engine's context. The
+    /// seam lets `tests` run the facade over test doubles, so its properties
+    /// rest on deterministic fakes rather than on what a module stub or its
+    /// replacement happens to answer.
+    fn with_modules<M: Modules>(
+        config: EngineConfig,
+        modules: impl FnOnce(&ModuleContext) -> M + Send + 'static,
+    ) -> std::io::Result<Self> {
         let (jobs_tx, jobs_rx) = crossbeam_channel::bounded(config.request_capacity.max(1));
         let (wake_tx, wake_rx) = crossbeam_channel::bounded(1);
         let (events_tx, events_rx) = crossbeam_channel::bounded(config.event_capacity.max(1));
@@ -616,7 +628,7 @@ impl Engine {
         };
         let dispatcher = std::thread::Builder::new()
             .name("engine-dispatch".into())
-            .spawn(move || dispatcher.run())?;
+            .spawn(move || dispatcher.run(modules))?;
         Ok(Self {
             jobs: Some(jobs_tx),
             wake: Some(wake_tx),
@@ -627,7 +639,7 @@ impl Engine {
             evidence,
             validation,
             plan_revisions,
-            review: ReviewService::new(),
+            review: Review::new(),
             next_scan: 1,
             highest_seen_scan: 0,
             next_request: 1,
@@ -966,11 +978,96 @@ struct Dispatcher {
     backlog: VecDeque<EngineEvent>,
 }
 
+/// The review service [`Engine`] drives. Unit tests swap in a switch that
+/// forwards to [`ReviewService`] by default and can hold a test double
+/// instead; it has the same three calls. Rejected: a trait object, which
+/// would put dynamic dispatch on the production path and tie `Engine`'s
+/// `Send` and `Sync` to the bounds written on it rather than to T7's type.
+#[cfg(not(test))]
+type Review = ReviewService;
+#[cfg(test)]
+type Review = tests::doubles::ReviewSwitch;
+
+/// The dispatcher's view of the module services: one call per job and per
+/// control, with the C-02 shapes of `scan_sim`, `compare` and `cleanup_sim`.
+/// Private, so it is a test seam and not a contract the modules implement;
+/// [`Services`] forwards to them.
+trait Modules {
+    fn start_scan(
+        &mut self,
+        scan: ScanId,
+        generation: ScenarioGeneration,
+        request: StartScan,
+    ) -> Result<(), NotImplemented>;
+    fn cancel_scan(&mut self, scan: ScanId) -> Result<(), NotImplemented>;
+    fn load_comparison(
+        &mut self,
+        request: RequestId,
+        comparison: ComparisonRequest,
+    ) -> Result<(), NotImplemented>;
+    fn build_plan(
+        &mut self,
+        plan: PlanRevision,
+        validation: PublishedValidation,
+    ) -> Result<(), NotImplemented>;
+    fn execute_plan(&mut self, plan: PlanRevision) -> Result<(), NotImplemented>;
+    fn stop_plan(&mut self, plan: PlanRevision) -> Result<(), NotImplemented>;
+}
+
 /// The module services the dispatcher drives.
 struct Services {
     scan: ScanService,
     compare: CompareService,
     cleanup: CleanupService,
+}
+
+impl Services {
+    fn new(context: &ModuleContext) -> Self {
+        Self {
+            scan: ScanService::new(context),
+            compare: CompareService::new(context),
+            cleanup: CleanupService::new(context),
+        }
+    }
+}
+
+impl Modules for Services {
+    fn start_scan(
+        &mut self,
+        scan: ScanId,
+        generation: ScenarioGeneration,
+        request: StartScan,
+    ) -> Result<(), NotImplemented> {
+        self.scan.start(scan, generation, request)
+    }
+
+    fn cancel_scan(&mut self, scan: ScanId) -> Result<(), NotImplemented> {
+        self.scan.cancel(scan)
+    }
+
+    fn load_comparison(
+        &mut self,
+        request: RequestId,
+        comparison: ComparisonRequest,
+    ) -> Result<(), NotImplemented> {
+        self.compare.load(request, comparison)
+    }
+
+    fn build_plan(
+        &mut self,
+        plan: PlanRevision,
+        validation: PublishedValidation,
+    ) -> Result<(), NotImplemented> {
+        self.cleanup.build(plan, validation)
+    }
+
+    fn execute_plan(&mut self, plan: PlanRevision) -> Result<(), NotImplemented> {
+        self.cleanup.execute(plan)
+    }
+
+    fn stop_plan(&mut self, plan: PlanRevision) -> Result<(), NotImplemented> {
+        self.cleanup.stop(plan)
+    }
 }
 
 /// What one wait of the dispatcher produced.
@@ -982,12 +1079,8 @@ enum Wake {
 }
 
 impl Dispatcher {
-    fn run(mut self) {
-        let mut services = Services {
-            scan: ScanService::new(&self.context),
-            compare: CompareService::new(&self.context),
-            cleanup: CleanupService::new(&self.context),
-        };
+    fn run<M: Modules>(mut self, modules: impl FnOnce(&ModuleContext) -> M) {
+        let mut services = modules(&self.context);
         while self.pass(&mut services, true) {}
     }
 
@@ -1002,17 +1095,17 @@ impl Dispatcher {
     /// queue is full, before it is taken. With `block` false the pass never
     /// waits (tests drive passes one at a time). Returns `false` once the
     /// engine is gone.
-    fn pass(&mut self, services: &mut Services, block: bool) -> bool {
+    fn pass(&mut self, services: &mut impl Modules, block: bool) -> bool {
         if !self.flush() {
             return false;
         }
         let pending = std::mem::take(&mut *lock(&self.control));
         if let Some(id) = pending.cancel {
-            let result = services.scan.cancel(id);
+            let result = services.cancel_scan(id);
             self.note(Origin::Scan(id), result);
         }
         if let Some(plan) = pending.stop {
-            let result = services.cleanup.stop(plan);
+            let result = services.stop_plan(plan);
             self.note(Origin::Plan(plan), result);
         }
         if self.backlog.len() < NOTICE_BACKLOG {
@@ -1038,29 +1131,29 @@ impl Dispatcher {
         }
     }
 
-    fn handle(&mut self, services: &mut Services, job: Job) {
+    fn handle(&mut self, services: &mut impl Modules, job: Job) {
         match job {
             Job::StartScan {
                 scan,
                 generation,
                 request,
             } => {
-                let result = services.scan.start(scan, generation, request);
+                let result = services.start_scan(scan, generation, request);
                 self.note(Origin::Scan(scan), result);
             }
             Job::LoadComparison {
                 request,
                 comparison,
             } => {
-                let result = services.compare.load(request, comparison);
+                let result = services.load_comparison(request, comparison);
                 self.note(Origin::Request(request), result);
             }
             Job::BuildCleanupPlan { plan, validation } => {
-                let result = services.cleanup.build(plan, validation);
+                let result = services.build_plan(plan, validation);
                 self.note(Origin::Plan(plan), result);
             }
             Job::ExecuteApprovedPlan(plan) => {
-                let result = services.cleanup.execute(plan);
+                let result = services.execute_plan(plan);
                 self.note(Origin::Plan(plan), result);
             }
         }
@@ -1123,13 +1216,240 @@ impl Dispatcher {
 
 #[cfg(test)]
 mod tests {
+    //! Facade properties proved over test doubles (`doubles`), never over a
+    //! module stub's answers: T5 to T8 replace the stubs and must not turn
+    //! these tests red, and D-004 forbids them to edit this file.
+
     use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
 
     use fuzzy_dedupe_domain::{CompareMode, FileId, RulesRevision, SnapshotId};
 
+    use self::doubles::{Call, CallLog, FakeModules, FakeReview, ReviewSwitch, ViewScan};
     use super::*;
     use crate::fixtures::{self, DEFAULT_SEED};
+
+    /// Deterministic stand-ins for the module services and the review
+    /// service, reached through the private `Modules` and `Review` seams.
+    pub(super) mod doubles {
+        use std::collections::BTreeSet;
+        use std::time::{Duration, Instant};
+
+        use fuzzy_dedupe_domain::RulesRevision;
+
+        use super::super::*;
+
+        /// One call the dispatcher made, in order.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub enum Call {
+            Start(ScanId),
+            Cancel(ScanId),
+            Load(RequestId),
+            Build(PlanRevision, PublishedValidation),
+            Execute(PlanRevision),
+            Stop(PlanRevision),
+        }
+
+        /// The calls a [`FakeModules`] received, shared with the test thread
+        /// while the fake lives on the dispatcher thread.
+        #[derive(Clone, Debug, Default)]
+        pub struct CallLog(Arc<Mutex<Vec<Call>>>);
+
+        impl CallLog {
+            pub fn calls(&self) -> Vec<Call> {
+                lock(&self.0).clone()
+            }
+
+            /// Waits up to `within` for a call matching `wanted`.
+            pub fn wait_for(&self, within: Duration, wanted: impl Fn(&Call) -> bool) -> bool {
+                let deadline = Instant::now() + within;
+                while Instant::now() < deadline {
+                    if lock(&self.0).iter().any(&wanted) {
+                        return true;
+                    }
+                    std::thread::yield_now();
+                }
+                false
+            }
+        }
+
+        /// Records every call and answers each with `answer`. `Err` makes it
+        /// refuse like a stub does, which is the only way to drive the
+        /// dispatcher's notice backlog; `Ok` makes it behave like a module
+        /// whose work runs elsewhere and emits nothing on the dispatcher.
+        pub struct FakeModules {
+            pub log: CallLog,
+            pub answer: Result<(), NotImplemented>,
+        }
+
+        impl FakeModules {
+            fn record(&self, call: Call) -> Result<(), NotImplemented> {
+                lock(&self.log.0).push(call);
+                self.answer
+            }
+        }
+
+        impl Modules for FakeModules {
+            fn start_scan(
+                &mut self,
+                scan: ScanId,
+                _generation: ScenarioGeneration,
+                _request: StartScan,
+            ) -> Result<(), NotImplemented> {
+                self.record(Call::Start(scan))
+            }
+
+            fn cancel_scan(&mut self, scan: ScanId) -> Result<(), NotImplemented> {
+                self.record(Call::Cancel(scan))
+            }
+
+            fn load_comparison(
+                &mut self,
+                request: RequestId,
+                _comparison: ComparisonRequest,
+            ) -> Result<(), NotImplemented> {
+                self.record(Call::Load(request))
+            }
+
+            fn build_plan(
+                &mut self,
+                plan: PlanRevision,
+                validation: PublishedValidation,
+            ) -> Result<(), NotImplemented> {
+                self.record(Call::Build(plan, validation))
+            }
+
+            fn execute_plan(&mut self, plan: PlanRevision) -> Result<(), NotImplemented> {
+                self.record(Call::Execute(plan))
+            }
+
+            fn stop_plan(&mut self, plan: PlanRevision) -> Result<(), NotImplemented> {
+                self.record(Call::Stop(plan))
+            }
+        }
+
+        /// A review double: it records what `Engine::review` handed to
+        /// policy and publishes an empty view of the loaded scan, like a
+        /// correct review service with no decisions.
+        #[derive(Debug, Default)]
+        pub struct FakeReview {
+            pub loaded: Option<ScanId>,
+            pub applied: Vec<(ReviewCommand, Option<ReviewedPair>)>,
+            pub view: ViewScan,
+        }
+
+        /// Which scan the published view claims. The non-default answers
+        /// stand for review state that disagrees with the facade.
+        #[derive(Clone, Copy, Debug, Default)]
+        pub enum ViewScan {
+            #[default]
+            Loaded,
+            Other(ScanId),
+            Withdrawn,
+        }
+
+        /// The engine's `Review` in test builds: the real service unless a
+        /// test installs a [`FakeReview`].
+        #[derive(Debug)]
+        pub enum ReviewSwitch {
+            Real(ReviewService),
+            Fake(Arc<Mutex<FakeReview>>),
+        }
+
+        impl ReviewSwitch {
+            pub const fn new() -> Self {
+                Self::Real(ReviewService::new())
+            }
+
+            pub fn load_scan(&mut self, results: Arc<ScanResults>) {
+                match self {
+                    Self::Real(review) => review.load_scan(results),
+                    Self::Fake(fake) => lock(fake).loaded = Some(results.scan),
+                }
+            }
+
+            pub fn apply(
+                &mut self,
+                command: ReviewCommand,
+                reviewed: Option<ReviewedPair>,
+            ) -> ReviewOutcome {
+                match self {
+                    Self::Real(review) => review.apply(command, reviewed),
+                    Self::Fake(fake) => {
+                        lock(fake).applied.push((command, reviewed));
+                        ReviewOutcome {
+                            status: ReviewStatus::Applied,
+                            changed: Vec::new(),
+                            invalidated: Vec::new(),
+                        }
+                    }
+                }
+            }
+
+            pub fn validation_view(&self) -> Result<Option<ValidationView>, NotImplemented> {
+                match self {
+                    Self::Real(review) => review.validation_view(),
+                    Self::Fake(fake) => {
+                        let fake = lock(fake);
+                        let scan = match fake.view {
+                            ViewScan::Loaded => fake.loaded,
+                            ViewScan::Other(scan) => Some(scan),
+                            ViewScan::Withdrawn => None,
+                        };
+                        Ok(scan.map(|scan| ValidationView {
+                            scan,
+                            queue: Vec::new(),
+                            protected: BTreeSet::new(),
+                            snapshots: Arc::default(),
+                            rules: RulesRevision::new(1),
+                        }))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Long enough for a loaded CI runner; a passing test never waits it.
+    const PATIENCE: Duration = Duration::from_secs(10);
+
+    /// An engine over [`FakeModules`] answering `answer`, and its call log.
+    fn engine(config: EngineConfig, answer: Result<(), NotImplemented>) -> (Engine, CallLog) {
+        let log = CallLog::default();
+        let modules = FakeModules {
+            log: log.clone(),
+            answer,
+        };
+        let engine = Engine::with_modules(config, move |_| modules).expect("engine starts");
+        (engine, log)
+    }
+
+    fn fake_review(engine: &mut Engine) -> Arc<Mutex<FakeReview>> {
+        let fake = Arc::default();
+        engine.review = ReviewSwitch::Fake(Arc::clone(&fake));
+        fake
+    }
+
+    /// The stub answer the backlog tests need from a double.
+    const REFUSE: Result<(), NotImplemented> = Err(NotImplemented::new(EngineModule::ScanSim));
+
+    fn start_scan() -> EngineRequest {
+        let mixed =
+            fixtures::build(ScenarioKind::Mixed, ScanId::new(1), DEFAULT_SEED).expect("mixed");
+        EngineRequest::StartScan(StartScan {
+            setup: mixed.results.setup.clone(),
+            rules: mixed.results.rules,
+            scenario: ScenarioKind::Mixed,
+            seed: DEFAULT_SEED,
+        })
+    }
+
+    fn adopt_mixed(engine: &mut Engine, scan: ScanId) -> ScanId {
+        let scenario = fixtures::build(ScenarioKind::Mixed, scan, DEFAULT_SEED).expect("mixed");
+        engine
+            .adopt_scenario(Arc::new(scenario))
+            .expect("fresh scan ID")
+    }
 
     fn pair(scan: ScanId, target: FileId, counterpart: FileId) -> ReviewedPair {
         ReviewedPair {
@@ -1145,16 +1465,14 @@ mod tests {
     }
 
     /// The trusted route end to end: evidence the comparison service stored
-    /// reaches the review service; a mismatched pair or another scan's
-    /// evidence is refused before policy.
+    /// reaches policy as the resolved pair; a mismatched pair, another
+    /// scan's evidence or a Compare request naming none is refused before
+    /// policy runs at all.
     #[test]
     fn review_resolves_only_stored_matching_evidence() {
-        let mut engine = Engine::new(EngineConfig::default()).expect("engine starts");
-        let scenario = fixtures::build(ScenarioKind::Mixed, ScanId::new(3), DEFAULT_SEED)
-            .expect("mixed is generated");
-        let scan = engine
-            .adopt_scenario(Arc::new(scenario))
-            .expect("fresh scan ID");
+        let (mut engine, _) = engine(EngineConfig::default(), Ok(()));
+        let review = fake_review(&mut engine);
+        let scan = adopt_mixed(&mut engine, ScanId::new(3));
         let (a, b, c) = (FileId::new(1), FileId::new(2), FileId::new(3));
         engine.evidence.record(RequestId::new(1), pair(scan, a, b));
         engine
@@ -1166,24 +1484,228 @@ mod tests {
             counterpart,
             reviewed: RequestId::new(reviewed),
         };
-        assert!(matches!(
-            engine.review(keep(b, 1)).status,
-            ReviewStatus::NotImplemented(_)
-        ));
+        assert_eq!(engine.review(keep(b, 1)).status, ReviewStatus::Applied);
+        let refused = |refusal| ReviewStatus::Refused { file: a, refusal };
         assert_eq!(
             engine.review(keep(c, 1)).status,
-            ReviewStatus::Refused {
-                file: a,
-                refusal: Refusal::EvidenceMismatch
-            }
+            refused(Refusal::EvidenceMismatch)
         );
         assert_eq!(
             engine.review(keep(b, 2)).status,
-            ReviewStatus::Refused {
-                file: a,
-                refusal: Refusal::EvidenceUnavailable
-            }
+            refused(Refusal::EvidenceUnavailable)
         );
+        let queue = |origin| ReviewCommand::RequestQueue {
+            file: a,
+            counterpart: b,
+            origin,
+            reviewed: None,
+        };
+        assert_eq!(
+            engine.review(queue(QueueOrigin::Compare)).status,
+            refused(Refusal::EvidenceUnavailable)
+        );
+        assert_eq!(
+            engine.review(queue(QueueOrigin::Checkbox)).status,
+            ReviewStatus::Applied
+        );
+
+        assert_eq!(
+            lock(&review).applied,
+            [
+                (keep(b, 1), Some(pair(scan, a, b))),
+                (queue(QueueOrigin::Checkbox), None),
+            ],
+            "only the matching pair and the Findings request reached policy"
+        );
+    }
+
+    /// Provenance is checked before anything is enqueued: no refused
+    /// request reaches the cleanup service or spends a plan revision, and
+    /// the admitted one carries the view the engine published.
+    #[test]
+    fn build_cleanup_plan_rejects_a_mismatched_scan_before_enqueueing() {
+        let (mut engine, log) = engine(EngineConfig::default(), Ok(()));
+        let review = fake_review(&mut engine);
+        let build = |scan| EngineRequest::BuildCleanupPlan(BuildCleanupPlan { scan });
+        let mismatch = |requested, current| Err(SubmitError::ScanMismatch { requested, current });
+        let (scan, other) = (ScanId::new(3), ScanId::new(4));
+
+        assert_eq!(engine.submit(build(scan)), mismatch(scan, None));
+        adopt_mixed(&mut engine, scan);
+        assert_eq!(engine.submit(build(other)), mismatch(other, Some(scan)));
+        lock(&review).view = ViewScan::Other(other);
+        assert_eq!(engine.submit(build(scan)), mismatch(scan, Some(other)));
+        // The engine's own record of the loaded scan decides even when the
+        // review state claims the requested one.
+        assert_eq!(engine.submit(build(other)), mismatch(other, Some(scan)));
+        lock(&review).view = ViewScan::Withdrawn;
+        assert_eq!(engine.submit(build(scan)), mismatch(scan, None));
+
+        lock(&review).view = ViewScan::Loaded;
+        let Ok(Origin::Plan(plan)) = engine.submit(build(scan)) else {
+            panic!("the reviewed scan's plan is admitted")
+        };
+        // Revision 1: the four refusals allocated none.
+        assert_eq!(plan, PlanRevision::new(1));
+        assert_eq!(engine.plan_revisions().active(), Some(plan));
+        assert!(log.wait_for(PATIENCE, |c| matches!(c, Call::Build(..))));
+        let published = engine.validation().current().expect("the plan's view");
+        assert_eq!(published.view.scan, scan);
+        assert_eq!(
+            log.calls(),
+            [Call::Build(plan, published)],
+            "only the admitted plan reached the cleanup service"
+        );
+    }
+
+    #[test]
+    fn a_full_request_queue_is_busy_and_cancellation_is_still_admitted() {
+        // One-slot queues and no draining: the refusing double fills the
+        // dispatcher's notice backlog, it stops taking jobs, the request
+        // queue fills behind it, and the next submit must answer Busy
+        // instead of blocking the caller.
+        let (mut engine, log) = engine(
+            EngineConfig {
+                request_capacity: 1,
+                event_capacity: 1,
+                ..EngineConfig::default()
+            },
+            REFUSE,
+        );
+        let deadline = Instant::now() + PATIENCE;
+        let mut last = None;
+        loop {
+            match engine.submit(start_scan()) {
+                Ok(Origin::Scan(id)) => last = Some(id),
+                Err(SubmitError::Busy) => break,
+                other => panic!("unexpected submit result {other:?}"),
+            }
+            assert!(Instant::now() < deadline, "the request queue never filled");
+        }
+        let scan = last.expect("at least one scan was admitted");
+        assert_eq!(
+            engine.submit(EngineRequest::CancelScan(scan)),
+            Ok(Origin::Scan(scan)),
+            "cancellation is admitted while the request queue is full"
+        );
+        assert!(
+            log.wait_for(PATIENCE, |c| *c == Call::Cancel(scan)),
+            "the admitted cancellation reached the scan service"
+        );
+    }
+
+    #[test]
+    fn cancellation_is_processed_while_the_event_queue_stays_full() {
+        let (mut engine, log) = engine(
+            EngineConfig {
+                request_capacity: 1,
+                event_capacity: 1,
+                ..EngineConfig::default()
+            },
+            REFUSE,
+        );
+        let deadline = Instant::now() + PATIENCE;
+        let mut last = None;
+        while engine
+            .submit(start_scan())
+            .map(|origin| last = Some(origin))
+            .is_ok()
+        {
+            assert!(Instant::now() < deadline, "the queues never filled");
+        }
+        let Some(Origin::Scan(scan)) = last else {
+            panic!("no scan admitted")
+        };
+        // Busy can come before the dispatcher has taken the admitted job and
+        // queued its refusal, so wait for the queue to fill rather than
+        // assume it; nothing drains it afterwards.
+        let events = engine.events.clone().expect("engine running");
+        while !events.is_full() {
+            assert!(Instant::now() < deadline, "the event queue never filled");
+            std::thread::yield_now();
+        }
+        for _ in 0..100 {
+            assert_eq!(
+                engine.submit(EngineRequest::CancelScan(scan)),
+                Ok(Origin::Scan(scan)),
+                "cancellation is always admitted"
+            );
+        }
+        assert!(engine.pending_controls() <= 1, "repeated cancels coalesce");
+        // The slot, not the log, is the deadline's measure: the dispatcher
+        // may hand over an early cancel while later ones re-arm the slot.
+        let taken_by = Instant::now() + Duration::from_secs(1);
+        while engine.pending_controls() > 0 {
+            assert!(
+                Instant::now() < taken_by,
+                "the dispatcher did not take the cancellation within 1 s"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            log.wait_for(PATIENCE, |c| *c == Call::Cancel(scan)),
+            "the taken cancellation reached the scan service"
+        );
+        assert!(events.is_full(), "the event queue stayed full throughout");
+    }
+
+    #[test]
+    fn a_live_cancellation_survives_a_flood_of_unknown_ones() {
+        let settle = Duration::from_millis(300);
+        let (mut engine, log) = engine(EngineConfig::default(), Ok(()));
+        let Ok(Origin::Scan(live)) = engine.submit(start_scan()) else {
+            panic!("StartScan admitted")
+        };
+        assert!(log.wait_for(PATIENCE, |c| *c == Call::Start(live)));
+        assert_eq!(
+            engine.submit(EngineRequest::CancelScan(live)),
+            Ok(Origin::Scan(live))
+        );
+        for unknown in 1000..1020 {
+            let id = ScanId::new(unknown);
+            assert_eq!(
+                engine.submit(EngineRequest::CancelScan(id)),
+                Ok(Origin::Scan(id)),
+                "unknown IDs are acknowledged harmlessly"
+            );
+        }
+        assert!(engine.pending_controls() <= 1, "only the live scan is held");
+        assert!(log.wait_for(PATIENCE, |c| *c == Call::Cancel(live)));
+        std::thread::sleep(settle);
+        let cancels: Vec<Call> = log
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, Call::Cancel(_)))
+            .collect();
+        assert_eq!(
+            cancels,
+            [Call::Cancel(live)],
+            "no unknown cancel reached it"
+        );
+
+        // The same for StopCleanup, with a plan made live through the shared
+        // allocator, as T8 does for a revised plan.
+        let plan = engine.plan_revisions().allocate();
+        engine.plan_revisions().activate(plan);
+        assert_eq!(
+            engine.submit(EngineRequest::StopCleanup(plan)),
+            Ok(Origin::Plan(plan))
+        );
+        for unknown in 1000..1020 {
+            let id = PlanRevision::new(unknown);
+            assert_eq!(
+                engine.submit(EngineRequest::StopCleanup(id)),
+                Ok(Origin::Plan(id))
+            );
+        }
+        assert!(log.wait_for(PATIENCE, |c| *c == Call::Stop(plan)));
+        std::thread::sleep(settle);
+        let stops: Vec<Call> = log
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, Call::Stop(_)))
+            .collect();
+        assert_eq!(stops, [Call::Stop(plan)], "only the live stop reached it");
     }
 
     #[test]
@@ -1261,7 +1783,8 @@ mod tests {
 
     fn dispatcher(
         event_capacity: usize,
-    ) -> (Dispatcher, Services, Sender<Job>, Receiver<EngineEvent>) {
+        answer: Result<(), NotImplemented>,
+    ) -> (Dispatcher, FakeModules, Sender<Job>, Receiver<EngineEvent>) {
         let (jobs_tx, jobs) = crossbeam_channel::bounded(128);
         let (_, wake) = crossbeam_channel::bounded(1);
         let (events_tx, events) = crossbeam_channel::bounded(event_capacity);
@@ -1273,10 +1796,9 @@ mod tests {
             plan_revisions: PlanRevisions::default(),
             worker_threads: 1,
         };
-        let services = Services {
-            scan: ScanService::new(&context),
-            compare: CompareService::new(&context),
-            cleanup: CleanupService::new(&context),
+        let modules = FakeModules {
+            log: CallLog::default(),
+            answer,
         };
         let dispatcher = Dispatcher {
             context,
@@ -1285,7 +1807,7 @@ mod tests {
             control: Arc::default(),
             backlog: VecDeque::new(),
         };
-        (dispatcher, services, jobs_tx, events)
+        (dispatcher, modules, jobs_tx, events)
     }
 
     fn comparison_job(id: u64) -> Job {
@@ -1305,30 +1827,35 @@ mod tests {
 
     #[test]
     fn replenished_controls_do_not_starve_jobs() {
-        let (mut d, mut services, jobs, _events) = dispatcher(1024);
+        let (mut d, mut modules, jobs, _events) = dispatcher(1024, Ok(()));
         for id in 0..10 {
             jobs.send(comparison_job(id)).expect("queued");
         }
         for _ in 0..10 {
             lock(&d.control).cancel = Some(ScanId::new(1));
             lock(&d.control).stop = Some(PlanRevision::new(1));
-            assert!(d.pass(&mut services, false));
+            assert!(d.pass(&mut modules, false));
         }
         assert!(
             jobs.is_empty(),
             "every pass serviced one job despite controls"
         );
+        let calls = modules.log.calls();
+        let count = |wanted: fn(&Call) -> bool| calls.iter().filter(|c| wanted(c)).count();
+        assert_eq!(count(|c| matches!(c, Call::Load(_))), 10);
+        assert_eq!(count(|c| matches!(c, Call::Cancel(_))), 10, "controls too");
+        assert_eq!(count(|c| matches!(c, Call::Stop(_))), 10);
     }
 
     #[test]
     fn notices_stay_bounded_across_passes_while_events_are_full() {
-        let (mut d, mut services, jobs, events) = dispatcher(1);
+        let (mut d, mut modules, jobs, events) = dispatcher(1, REFUSE);
         for id in 0..100 {
             jobs.send(comparison_job(id)).expect("queued");
         }
         for _ in 0..200 {
             lock(&d.control).cancel = Some(ScanId::new(1));
-            assert!(d.pass(&mut services, false));
+            assert!(d.pass(&mut modules, false));
             assert!(
                 d.backlog.len() <= NOTICE_BACKLOG + 2,
                 "backlog {}",

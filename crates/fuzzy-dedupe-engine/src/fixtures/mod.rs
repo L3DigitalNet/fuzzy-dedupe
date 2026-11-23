@@ -92,6 +92,13 @@ impl ScenarioKind {
 
 /// A review decision a scenario starts with, which the app or a test replays
 /// through review commands. Seeds never encode a state C-05 forbids.
+///
+/// [`Scenario::seeded_decisions`] replays in listed order, each seed through
+/// its `ReviewCommand`, against the review state the previous seeds left. A
+/// `MakeReference` seed therefore changes its group's counterparts before
+/// any later `Queue` seed in that group is applied, and that `Queue` seed
+/// names its counterpart under the new reference, not the one the results
+/// show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SeededDecision {
     Kept(FileId),
@@ -103,6 +110,12 @@ pub enum SeededDecision {
         file: FileId,
         counterpart: FileId,
     },
+    /// A user-chosen reference: mid-review state, replayed through
+    /// `ReviewCommand::MakeReference`. The scenario's results keep the §6
+    /// default reference (owner reading B), so the seed names a member that
+    /// is not its group's reference there; the reference changes only when
+    /// the seed is replayed.
+    MakeReference(FileId),
 }
 
 /// One built scenario.
