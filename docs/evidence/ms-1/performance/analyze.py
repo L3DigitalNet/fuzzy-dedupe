@@ -243,6 +243,51 @@ def target_checks(streams) -> list[tuple[str, bool, str]]:
     return rows
 
 
+def min_state_share(pooled: list[float], p95_limit: float, p99_limit: float) -> int | None:
+    """Return the fewest samples a T2 wrap state must hold to be proven within budget.
+
+    The bound needs no assumption about how samples split between wrap
+    states. For a state of m of the n pooled samples, its nearest-rank p95
+    sits at state rank ceil(0.95 m), so ceil(0.05 m) state samples, at
+    least, are at or above it; those occupy the top of the pooled order,
+    hence the state's p95 is at most the pooled sample at rank
+    n - floor(0.05 m), which is the pooled nearest-rank quantile at level
+    1 - 0.05 s for s = m / n. p99 likewise, at rank n - floor(0.01 m).
+
+    The returned m is the smallest state size for which both bounds meet
+    the limits; any state at least that large meets them. The bound only
+    tightens as m grows, so a scan from 1 stops at the first fit. Returns
+    None when even m = n fails, which is the pooled check failing.
+    """
+    n = len(pooled)
+    for m in range(1, n + 1):
+        # Integer floors, so 5 * m / 100 never rounds across a rank.
+        if pooled[n - (5 * m) // 100 - 1] <= p95_limit and pooled[n - m // 100 - 1] <= p99_limit:
+            return m
+    return None
+
+
+def wrap_bound_line(streams) -> str:
+    """Return the supplementary T2 per-wrap-state line; it never decides the exit status."""
+    pooled = sorted(v for samples in streams.get("T2", {}).values() for v in samples.get("cpu_usage", []))
+    prefix = "- **Supplementary, T2 per wrap state (not a target check; the exit status ignores it).** "
+    if not pooled:
+        return prefix + "No T2 `cpu_usage` samples, so no bound."
+    m = min_state_share(pooled, 8.0, 16.7)
+    if m is None:
+        return prefix + (
+            "The pooled check already fails (s = 1 exceeds the frame budget), so no wrap state can be "
+            "shown to meet p95 ≤ 8 ms and p99 ≤ 16.7 ms."
+        )
+    share = m / len(pooled)
+    return prefix + (
+        f"Each wrap state meets the T1 and T2 frame budget (p95 ≤ 8 ms, p99 ≤ 16.7 ms) if it holds at "
+        f"least s* = {share:.4f} of T2's {len(pooled)} frames ({m} samples); the bound is nearest-rank on "
+        "the pooled samples and assumes nothing about the split. The script spends equal wall time in "
+        "each state (4 s alternation), so a state holds about half the frames unless its frame rate differs."
+    )
+
+
 def summary(streams, runs) -> tuple[list[str], bool]:
     """Return the Markdown summary lines and whether every check passed."""
     out = ["## T25 measurement summary", ""]
@@ -293,6 +338,7 @@ def summary(streams, runs) -> tuple[list[str], bool]:
         "",
         "### Notes",
         "",
+        wrap_bound_line(streams),
         (
             "- **T2 wrap on and off.** The C-10 stream has no time or wrap column, so the samples "
             "cannot be split by wrap state. The T2 script starts with wrap off and toggles it with "
