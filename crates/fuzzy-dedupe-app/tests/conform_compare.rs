@@ -795,4 +795,34 @@ mod conform_compare {
             }
         }
     }
+
+    // ── T41 item 2: the candidate stepper's hit targets ─────────────────
+
+    /// §11.7 "Preserve usable hit targets despite compact glyphs": each
+    /// candidate stepper arrow is at least 24 × 30 wherever the toolbar
+    /// shows it, whatever the glyph's own width. At least one combination
+    /// must show the stepper, so the check is never vacuous.
+    #[test]
+    fn conform_compare_stepper_arrows_are_usable_hit_targets() {
+        let mut checked = 0;
+        for (size, zoom) in COMBOS {
+            let mut h = launch("stepper", ScenarioKind::Design, size, zoom);
+            open_design_pair(&mut h);
+            let what = format!("{}×{} at {zoom}%", size.x, size.y);
+            for name in [PREVIOUS_CANDIDATE_NAME, NEXT_CANDIDATE_NAME] {
+                let Some(arrow) = h.query_by_role_and_label(Role::Button, name) else {
+                    continue;
+                };
+                let rect = arrow.rect();
+                assert!(
+                    rect.width() >= 24.0 - TOLERANCE && rect.height() >= 30.0 - TOLERANCE,
+                    "{what}: {name} is {} × {}, under 24 × 30",
+                    rect.width(),
+                    rect.height()
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 2, "the stepper never showed");
+    }
 }

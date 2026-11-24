@@ -5,6 +5,10 @@
 //! filter row, table and table-region states conform to the review frames
 //! at 1600 × 960 and 1024 × 600, each at zoom 100% and 200%, light and dark.
 //!
+//! PV-T41-001 adds items 1, 3, 4 and 5 of plan T41: the table's scrollbar
+//! at rest, the chips' fit at the narrowest width, the Group column's floor
+//! and the Scanning line's folder form.
+//!
 //! Every test sits in the `conform_findings` module and carries the
 //! `conform_` prefix, so `-E 'test(conform_)'` selects them with the other
 //! legs'. The rig is `tests/conform_shell.rs`'s, copied: the app is built
@@ -31,7 +35,7 @@ mod conform_findings {
     use fuzzy_dedupe_app::app::{AppDeps, Clock, FuzzyDedupeApp};
     use fuzzy_dedupe_app::measure::{NoMeasurement, StartupScenario};
     use fuzzy_dedupe_app::presentation::commands::UiIntent;
-    use fuzzy_dedupe_app::presentation::projections::SORT_ITEMS;
+    use fuzzy_dedupe_app::presentation::projections::{self, SORT_ITEMS};
     use fuzzy_dedupe_app::presentation::state::{
         PresentationState, RowId, ScanStage, ThemeOverride,
     };
@@ -40,6 +44,7 @@ mod conform_findings {
     use fuzzy_dedupe_app::ui::shell::WORKSPACE_TOOLBAR_NAME;
     use fuzzy_dedupe_app::ui::theme::{self, Icon, Mode, Token, Zoom};
     use fuzzy_dedupe_app::ui::widgets::grouped_table;
+    use fuzzy_dedupe_domain::ScanProgress;
     use fuzzy_dedupe_engine::fixtures::ScenarioKind;
     use fuzzy_dedupe_engine::service::EngineConfig;
     use fuzzy_dedupe_platform::dirs::AppDirs;
@@ -1095,5 +1100,173 @@ mod conform_findings {
             }
             assert!(seen_review > 0, "{theme:?}: no review-first row in view");
         }
+    }
+
+    // ── T41: the round-2 review deviations ──────────────────────────────
+
+    /// T41 item 1, frame `13:648`: the table's vertical scrollbar shows at
+    /// rest, with no pointer over the table, as a `quiet` thumb inside the
+    /// reserved space right of the columns. Every group is expanded so the
+    /// rows overflow the body and there is something to scroll.
+    #[test]
+    fn conform_findings_table_scrollbar_thumb_shows_without_hover() {
+        let mut h = launch_design("scrollbar", Vec2::new(1600.0, 960.0), 100);
+        expand_all(&mut h);
+        for theme in [ThemeOverride::Light, ThemeOverride::Dark] {
+            push(&mut h, UiIntent::SetTheme(theme));
+            h.remove_cursor();
+            settle(&mut h);
+            let table = table(&h);
+            let reserve = Rect::from_min_max(
+                egui::pos2(
+                    table.right() - grouped_table::SCROLLBAR_RESERVE,
+                    table.top(),
+                ),
+                table.max,
+            );
+            let quiet = color(&h, Token::Quiet);
+            let in_reserve: Vec<egui::epaint::RectShape> = shapes(&h)
+                .into_iter()
+                .filter_map(|s| match s {
+                    egui::Shape::Rect(r) => Some(r),
+                    _ => None,
+                })
+                .filter(|r| inside(reserve, r.rect) && r.rect.height() >= 12.0)
+                .collect();
+            assert!(
+                in_reserve
+                    .iter()
+                    .any(|r| r.fill == quiet && r.rect.width() >= 4.0),
+                "{theme:?}: no quiet scrollbar thumb at rest in {reserve:?}; painted there: {:?}",
+                in_reserve
+                    .iter()
+                    .map(|r| (r.rect, r.fill))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// T41 item 3, at rest: at 1024 × 600 under 200% (512 points) the
+    /// chips narrow their padding to fit the row, so every chip lies at or
+    /// before the 12-unit work-area inset and the row starts at the
+    /// workspace's left edge, unscrolled.
+    #[test]
+    fn conform_findings_chips_fit_before_the_inset_at_the_narrowest_width() {
+        let mut h = launch_design("chip-inset", Vec2::new(1024.0, 600.0), 200);
+        for theme in [ThemeOverride::Light, ThemeOverride::Dark] {
+            push(&mut h, UiIntent::SetTheme(theme));
+            h.remove_cursor();
+            settle(&mut h);
+            let edge = client(&h).right() - 12.0;
+            let budget = h
+                .get_by_role_and_label(Role::Group, WORKSPACE_TOOLBAR_NAME)
+                .rect();
+            let chips = chips(&h);
+            assert_eq!(chips.len(), 5, "{theme:?}: chips {chips:?}");
+            assert!(
+                (chips[0].left() - budget.left()).abs() <= TOLERANCE,
+                "{theme:?}: the chip row is scrolled: first chip {:?}, workspace left {}",
+                chips[0],
+                budget.left()
+            );
+            for chip in &chips {
+                assert!(
+                    chip.right() <= edge + TOLERANCE,
+                    "{theme:?}: chip {chip:?} runs past the inset at {edge}"
+                );
+            }
+        }
+    }
+
+    /// T41 item 3, at the reference size: every chip keeps the frame's
+    /// 6-unit padding on both sides of its label (frame `13:648`), so the
+    /// narrow padding never applies where the row fits.
+    #[test]
+    fn conform_findings_chips_keep_frame_padding_where_the_row_fits() {
+        let h = launch_design("chip-pad", Vec2::new(1600.0, 960.0), 100);
+        let chips = chips(&h);
+        assert_eq!(chips.len(), 5, "five chips: {chips:?}");
+        let labels: Vec<Rect> = texts(&h).into_iter().map(|t| text_rect(&t)).collect();
+        for chip in &chips {
+            let label = labels
+                .iter()
+                .find(|r| inside(*chip, **r) && r.width() > 4.0)
+                .unwrap_or_else(|| panic!("no label in chip {chip:?}"));
+            let (left, right) = (label.left() - chip.left(), chip.right() - label.right());
+            assert!(
+                (left - 6.0).abs() <= TOLERANCE && (right - 6.0).abs() <= TOLERANCE,
+                "chip {chip:?} pads its label {left} and {right}, frame 6"
+            );
+        }
+    }
+
+    /// T41 item 4: at 1600 × 960 under 200% the second shrink stage never
+    /// takes Group below its widest label, so every group label in view
+    /// shows whole ("G002 (3)" and "G004 (3)" no longer both read "G00…").
+    #[test]
+    fn conform_findings_group_labels_show_whole_under_the_second_shrink_stage() {
+        let h = launch_design("group-floor", Vec2::new(1600.0, 960.0), 200);
+        let labels: Vec<String> = state(&h)
+            .scan
+            .results
+            .as_ref()
+            .expect("results")
+            .groups
+            .iter()
+            .map(projections::group_label)
+            .collect();
+        let painted: Vec<(String, bool)> = texts(&h)
+            .into_iter()
+            .filter(|t| labels.iter().any(|l| l == t.galley.text()))
+            .map(|t| (t.galley.text().to_owned(), t.galley.elided))
+            .collect();
+        assert!(!painted.is_empty(), "no group label in view");
+        let elided: Vec<&String> = painted
+            .iter()
+            .filter(|(_, elided)| *elided)
+            .map(|(l, _)| l)
+            .collect();
+        assert!(
+            elided.is_empty(),
+            "group labels elided: {elided:?} (of {})",
+            painted.len()
+        );
+    }
+
+    /// T41 item 5, frame `28:2171`: the Scanning line shows the folder in
+    /// the Folder column's display form, trailing "/" included, while the
+    /// engine's progress keeps its own string.
+    #[test]
+    fn conform_findings_scanning_line_keeps_the_trailing_slash() {
+        let mut h = launch_design("scanning-slash", Vec2::new(1600.0, 960.0), 100);
+        let s = state_mut(&mut h);
+        s.scan.stage = ScanStage::Running;
+        s.scan.progress = Some(ScanProgress {
+            current_folder: "~/Documents/Archive".to_owned(),
+            files_read: 8214,
+            groups_found: 61,
+            elapsed: std::time::Duration::from_secs(42),
+        });
+        // The segment animates, so the harness never settles: step only.
+        for _ in 0..6 {
+            h.step();
+        }
+        assert!(
+            h.query_by_label("Reading files in ~/Documents/Archive/")
+                .is_some(),
+            "the Scanning line drops the trailing \"/\": {:?}",
+            h.query_all_by_label_contains("Reading files in")
+                .map(|n| n.accesskit_node().label().unwrap_or_default())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state(&h)
+                .scan
+                .progress
+                .as_ref()
+                .map(|p| p.current_folder.as_str()),
+            Some("~/Documents/Archive"),
+            "the progress string changed"
+        );
     }
 }

@@ -37,6 +37,7 @@ use fuzzy_dedupe_engine::compare::AlignedComparison;
 use fuzzy_dedupe_engine::service::{EngineRequest, ReviewCommand};
 
 use crate::presentation::commands::UiIntent;
+use crate::presentation::projections;
 use crate::presentation::state::{CompareState, DialogSubject, UniqueTextSubject};
 use crate::ui::dialogs::matching_rules::alert_check_box;
 use crate::ui::dialogs::queue_identical::{current_reference, footer_row, icon, text};
@@ -362,7 +363,8 @@ fn headline(count: u64, counterpart: &str) -> (String, String) {
 }
 
 /// The target, then "Compared with reference" and the counterpart, each
-/// with its folder.
+/// with its folder in the Findings Folder column's display form (a
+/// trailing "/", frame `16:932`); display only, the member keeps its own.
 fn identities(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -381,7 +383,7 @@ fn identities(
                     Token::Ink,
                 ));
                 ui.label(text(
-                    &m.folder,
+                    &projections::folder_label(&m.folder),
                     CompactStyle::PathDetail,
                     palette,
                     Token::Muted,
@@ -403,7 +405,7 @@ fn identities(
                     Token::Ink,
                 ));
                 ui.label(text(
-                    &m.folder,
+                    &projections::folder_label(&m.folder),
                     CompactStyle::PathDetail,
                     palette,
                     Token::Muted,
