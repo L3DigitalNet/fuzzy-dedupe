@@ -266,11 +266,16 @@ pub fn footer(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Di
     // After the footer's buttons, so a click on Queue for cleanup this frame
     // moves focus too: the checkbox drew earlier in the frame, in the body,
     // and its ID is stable, so the request lands on it now rather than a
-    // frame later.
+    // frame later. The host scrolls it into view on the next body draw; the
+    // checkbox sits last in the body, under the pinned footer band when the
+    // body is long. `reveal_focus` covers the press that finds the checkbox
+    // already focused but scrolled away, which moves no focus for the host
+    // to notice.
     if std::mem::take(&mut draft.focus_checkbox)
         && let Some(checkbox) = draft.checkbox
     {
         ctx.memory_mut(|memory| memory.request_focus(checkbox));
+        dialog_host::reveal_focus(&ctx);
         ctx.request_repaint();
     }
     response
