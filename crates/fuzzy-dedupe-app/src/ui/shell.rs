@@ -138,6 +138,15 @@ pub fn show(ui: &mut Ui, state: &mut PresentationState, intents: &mut IntentQueu
                 menu: dialog.menu(),
             };
             let workspace = *workspace;
+            // egui adds `item_spacing.y` after every allocation, which would
+            // stack on the §11.3 gap and put the body 11 below the toolbar
+            // row, not 8. The row is therefore allocated with no vertical
+            // spacing, so `GAP` is the whole gap, and the body gets the
+            // theme's spacing back for its own content. Rejected: zeroing
+            // the spacing in `ui/theme.rs`, which would also move every
+            // popup body and the rail.
+            let item_spacing = ui.spacing().item_spacing;
+            ui.spacing_mut().item_spacing.y = 0.0;
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_width(), TOOLBAR_HEIGHT),
                 Layout::left_to_right(Align::Center),
@@ -152,6 +161,7 @@ pub fn show(ui: &mut Ui, state: &mut PresentationState, intents: &mut IntentQueu
                 },
             );
             ui.add_space(GAP);
+            ui.spacing_mut().item_spacing = item_spacing;
             match workspace {
                 WorkspaceState::Findings => findings::show(ui, &mut cx, intents),
                 WorkspaceState::Compare => compare::show(ui, &mut cx, intents),

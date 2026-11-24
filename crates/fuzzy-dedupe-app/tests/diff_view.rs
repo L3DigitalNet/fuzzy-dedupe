@@ -20,8 +20,10 @@
 //! `diff_view:a:<row>` or `diff_view:b:<row>` (zero-based aligned row),
 //! whose label is the displayed source line number (absent on a spacer),
 //! and whose bounds are the row's text cell: full row height, starting at
-//! the first character column. The caption and notice strings below are
-//! the widget's own text.
+//! the first character column. The widget draws no caption: the Only-in
+//! counts are Compare's evidence-row menus (`tests/compare.rs`), and the
+//! notice strings below are what `diff_view::show` returns for the host to
+//! draw in each pane's identity header (`tests/workspace_rhythm.rs`).
 
 mod diff_view {
     use std::sync::Arc;
@@ -259,10 +261,12 @@ mod diff_view {
 
     /// The harness state: Compare's state, drawn only once the theme is
     /// installed, because the harness runs a frame while it is built and
-    /// the shipped text styles do not exist before `theme::install`.
+    /// the shipped text styles do not exist before `theme::install`; and
+    /// the notices the last frame's `diff_view::show` returned.
     struct Slot {
         compare: CompareState,
         themed: bool,
+        notices: diff_view::PaneNotices,
     }
 
     type View = Harness<'static, Slot>;
@@ -276,12 +280,13 @@ mod diff_view {
             .build_ui_state(
                 |ui, slot: &mut Slot| {
                     if slot.themed {
-                        diff_view::show(ui, &mut slot.compare, true);
+                        slot.notices = diff_view::show(ui, &mut slot.compare, true);
                     }
                 },
                 Slot {
                     compare,
                     themed: false,
+                    notices: diff_view::PaneNotices::default(),
                 },
             );
         theme::install(&harness.ctx, Vec::new());
@@ -497,9 +502,18 @@ mod diff_view {
             let aligned = state.comparison.aligned().expect("ready");
             assert_eq!(aligned.only_in_a.count(), unique_a);
             assert_eq!(aligned.only_in_b.count(), unique_b);
+            // The counts' text form, which Compare's evidence-row menus
+            // show; the panes themselves draw no Only-in caption (T37).
+            assert_eq!(
+                diff_view::only_in_caption("A", unique_a, mode == CompareMode::Normalized),
+                format!("Only in A: {unique_a} lines{suffix}")
+            );
+            assert_eq!(
+                diff_view::only_in_caption("B", unique_b, mode == CompareMode::Normalized),
+                format!("Only in B: {unique_b} lines{suffix}")
+            );
             let harness = view(state);
-            harness.get_by_label(&format!("Only in A: {unique_a} lines{suffix}"));
-            harness.get_by_label(&format!("Only in B: {unique_b} lines{suffix}"));
+            assert!(harness.query_by_label_contains("Only in").is_none());
         }
     }
 
@@ -711,23 +725,26 @@ mod diff_view {
             .map(|text| text.text.to_string())
             .expect("normalized text");
         assert_ne!(normalized, pair.a, "the scenario ignores line endings");
+        let notice = Some(diff_view::NORMALIZED_NOTICE.to_owned());
         let mut harness = view(state);
         assert_eq!(
-            harness
-                .query_all_by_label(diff_view::NORMALIZED_NOTICE)
-                .count(),
-            2,
+            harness.state().notices,
+            [notice.clone(), notice.clone()],
             "both panes say the view copies normalized text"
         );
         select_all(&mut harness);
         assert_eq!(copy(&mut harness), normalized);
         harness.run();
-        harness.get_by_label("Copied normalized text from A");
+        assert_eq!(
+            harness.state().notices,
+            [Some("Copied normalized text from A".to_owned()), notice]
+        );
 
         let mut original = view(load(&pair.a, &pair.b, CompareMode::Original));
         select_all(&mut original);
         assert_eq!(copy(&mut original), pair.a);
         original.run();
+        assert_eq!(original.state().notices, [None, None]);
         assert!(original.query_by_label_contains("normalized").is_none());
     }
 }

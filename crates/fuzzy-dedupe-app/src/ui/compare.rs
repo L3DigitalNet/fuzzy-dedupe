@@ -125,7 +125,7 @@ pub fn jump_item_name(b: bool) -> String {
     format!("Jump to first line only in {}", letter(b))
 }
 
-/// The Only-in menu's accessible name: the pane caption's text and "▾".
+/// The Only-in menu's accessible name: its visible count text and "▾".
 #[must_use]
 pub fn only_in_name(b: bool, count: u64, normalized: bool) -> String {
     format!(
@@ -557,12 +557,23 @@ pub fn show(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
         cx.compare.active_change = cx.compare.active_change.min(aligned.hunks.len() - 1);
     }
 
+    // The rows stack with exactly `GAP` between them and the identity
+    // header sits flush on the panes (frame `13:1304`: rows at 52 and 88,
+    // the paired region at 124). egui's `item_spacing.y`, added after each
+    // allocation, would push the panes 9 units down; the rows are allocated
+    // with none, and the panes get the theme's spacing back.
+    let item_spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing.y = 0.0;
     evidence_row(ui, cx, intents, &view, aligned, palette);
     ui.add_space(GAP);
     change_row(ui, cx, aligned, palette);
     ui.add_space(GAP);
-    identities(ui, cx, &view, palette);
-    diff_view::show(ui, cx.compare, cx.input_enabled);
+    let header = identity_band(ui);
+    ui.spacing_mut().item_spacing = item_spacing;
+    // The identities are painted after the panes because they show the
+    // notices this frame's panes report, a copy made this frame included.
+    let notices = diff_view::show(ui, cx.compare, cx.input_enabled);
+    identities(ui, cx, &view, header, &notices, palette);
     if cx.preferences.compare_split_ratio.to_bits() != cx.compare.split_ratio.to_bits() {
         cx.preferences.compare_split_ratio = cx.compare.split_ratio;
     }
@@ -795,68 +806,78 @@ fn change_row(
     aligned: Option<&AlignedComparison>,
     palette: &Palette,
 ) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), ROW_HEIGHT),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            let changes = aligned.map_or(0, |a| a.hunks.len());
-            let active = cx.compare.active_change;
-            label(
-                ui,
-                projections::change_label(active, changes),
-                CompactStyle::Supporting,
-                palette.color(Token::Muted),
-            );
-            let previous = plain(
-                ui,
-                PREVIOUS_CHANGE_NAME,
-                PREVIOUS_CHANGE_NAME,
-                active > 0,
-                palette,
-            )
-            .on_hover_text("Previous change (Alt+Up)");
-            let next = plain(
-                ui,
-                NEXT_CHANGE_NAME,
-                NEXT_CHANGE_NAME,
-                active + 1 < changes,
-                palette,
-            )
-            .on_hover_text("Next change (Alt+Down)");
-            if cx.input_enabled && previous.clicked() {
-                set_change(cx.compare, false);
-            }
-            if cx.input_enabled && next.clicked() {
-                set_change(cx.compare, true);
-            }
-            ui.add(egui::Separator::default().vertical().spacing(8.0));
-            let wrap = check_box(
-                ui,
-                cx.compare.wrap,
-                Some(WRAP_NAME),
-                WRAP_NAME,
-                cx.input_enabled,
-            )
-            .on_hover_text("Toggle wrap (Alt+Z)");
-            if cx.input_enabled && wrap.clicked() {
-                toggle_wrap(cx);
-            }
-            let linked = check_box(
-                ui,
-                cx.compare.linked_scroll,
-                Some(LINKED_SCROLL_NAME),
-                LINKED_SCROLL_NAME,
-                cx.input_enabled,
-            )
-            .on_hover_text("Toggle linked scroll (Alt+L)");
-            if cx.input_enabled && linked.clicked() {
-                toggle_linked(cx);
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                view_mode(ui, cx, palette);
-            });
-        },
+    // The row keeps its 28 units while ‹ Previous and Next › stay 30 high,
+    // overhanging it by 1 above and below as frame `13:1304` draws them
+    // (y −1 in the row). The controls are laid out in that 30-high band,
+    // centred on the row, in a child the parent never allocates, so only
+    // the row itself advances the stack. Rejected: `allocate_ui_with_layout`
+    // or `scope_builder`, which allocate the band (or the row grown to its
+    // tallest control) and push everything below 1 or 2 units down.
+    let row = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), ROW_HEIGHT));
+    let band = row.expand2(Vec2::new(0.0, (CONTROL_HEIGHT - ROW_HEIGHT) / 2.0));
+    ui.advance_cursor_after_rect(row);
+    let mut row_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(band)
+            .layout(Layout::left_to_right(Align::Center)),
     );
+    let ui = &mut row_ui;
+    let changes = aligned.map_or(0, |a| a.hunks.len());
+    let active = cx.compare.active_change;
+    label(
+        ui,
+        projections::change_label(active, changes),
+        CompactStyle::Supporting,
+        palette.color(Token::Muted),
+    );
+    let previous = plain(
+        ui,
+        PREVIOUS_CHANGE_NAME,
+        PREVIOUS_CHANGE_NAME,
+        active > 0,
+        palette,
+    )
+    .on_hover_text("Previous change (Alt+Up)");
+    let next = plain(
+        ui,
+        NEXT_CHANGE_NAME,
+        NEXT_CHANGE_NAME,
+        active + 1 < changes,
+        palette,
+    )
+    .on_hover_text("Next change (Alt+Down)");
+    if cx.input_enabled && previous.clicked() {
+        set_change(cx.compare, false);
+    }
+    if cx.input_enabled && next.clicked() {
+        set_change(cx.compare, true);
+    }
+    ui.add(egui::Separator::default().vertical().spacing(8.0));
+    let wrap = check_box(
+        ui,
+        cx.compare.wrap,
+        Some(WRAP_NAME),
+        WRAP_NAME,
+        cx.input_enabled,
+    )
+    .on_hover_text("Toggle wrap (Alt+Z)");
+    if cx.input_enabled && wrap.clicked() {
+        toggle_wrap(cx);
+    }
+    let linked = check_box(
+        ui,
+        cx.compare.linked_scroll,
+        Some(LINKED_SCROLL_NAME),
+        LINKED_SCROLL_NAME,
+        cx.input_enabled,
+    )
+    .on_hover_text("Toggle linked scroll (Alt+L)");
+    if cx.input_enabled && linked.clicked() {
+        toggle_linked(cx);
+    }
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        view_mode(ui, cx, palette);
+    });
 }
 
 /// The bordered Original | Normalized switch. Choosing a mode only sets
@@ -899,33 +920,54 @@ fn view_mode(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, palette: &Palette) {
         });
 }
 
-/// The pinned file identity above each pane, on the panes' own split.
-fn identities(ui: &mut Ui, cx: &WorkspaceCx<'_>, view: &CompareView, palette: &Palette) {
+/// Allocates the pinned identities' 54-high band across the paired region
+/// and returns it. The panes start at its bottom edge, so callers allocate
+/// it with no vertical item spacing (see [`show`]).
+fn identity_band(ui: &mut Ui) -> Rect {
     let area = ui.available_rect_before_wrap();
+    let band = Rect::from_min_size(area.min, Vec2::new(area.width(), IDENTITY_HEIGHT));
+    ui.advance_cursor_after_rect(band);
+    band
+}
+
+/// Paints the pinned file identity above each pane into `band`, on the
+/// panes' own split, each with its pane's notice from `notices`.
+fn identities(
+    ui: &mut Ui,
+    cx: &WorkspaceCx<'_>,
+    view: &CompareView,
+    band: Rect,
+    notices: &diff_view::PaneNotices,
+    palette: &Palette,
+) {
     let ratio = cx.compare.split_ratio.clamp(SPLIT_RANGE.0, SPLIT_RANGE.1);
-    let usable = (area.width() - PANE_GAP).max(2.0);
-    let split = area.left() + (usable * ratio).round();
-    let top = area.top();
-    let bottom = top + IDENTITY_HEIGHT;
+    let usable = (band.width() - PANE_GAP).max(2.0);
+    let split = band.left() + (usable * ratio).round();
     let rects = [
-        Rect::from_min_max(area.min, egui::pos2(split, bottom)),
-        Rect::from_min_max(
-            egui::pos2(split + PANE_GAP, top),
-            egui::pos2(area.right(), bottom),
-        ),
+        Rect::from_min_max(band.min, egui::pos2(split, band.bottom())),
+        Rect::from_min_max(egui::pos2(split + PANE_GAP, band.top()), band.max),
     ];
-    for (rect, identity) in rects.into_iter().zip([&view.a, &view.b]) {
-        pinned_identity(ui, rect, identity, palette);
+    for ((rect, identity), notice) in rects.into_iter().zip([&view.a, &view.b]).zip(notices) {
+        pinned_identity(ui, rect, identity, notice.as_deref(), palette);
     }
-    ui.advance_cursor_after_rect(Rect::from_min_max(
-        area.min,
-        egui::pos2(area.right(), bottom),
-    ));
 }
 
 /// One pinned identity (frame `13:1410`): icon, name, path with size and
-/// date when they fit, and the side's role.
-fn pinned_identity(ui: &mut Ui, rect: Rect, identity: &PaneIdentity, palette: &Palette) {
+/// date when they fit, and the side's role; with a pane notice, the role
+/// moves up to the name's line and the notice takes the path's line at the
+/// trailing edge.
+///
+/// The notice is IR-006's statement that the pane shows (or copied)
+/// normalized text. It moved here from the pane caption the widget no
+/// longer draws (frame `13:1304` has none), and it is its own accessibility
+/// node, so assistive technology hears it apart from the file's identity.
+fn pinned_identity(
+    ui: &mut Ui,
+    rect: Rect,
+    identity: &PaneIdentity,
+    notice: Option<&str>,
+    palette: &Palette,
+) {
     // One accessibility node for the whole row, its texts painted. Rejected:
     // a label widget per text, which puts a second node named exactly like
     // the file next to Review unique text's own when that popup opens over
@@ -962,11 +1004,30 @@ fn pinned_identity(ui: &mut Ui, rect: Rect, identity: &PaneIdentity, palette: &P
         ink,
     );
     let role_left = inner.right() - role.size().x;
-    painter.galley(
-        egui::pos2(role_left, inner.center().y - role.size().y / 2.0),
-        role,
-        ink,
-    );
+    let role_top = if notice.is_some() {
+        inner.top()
+    } else {
+        inner.center().y - role.size().y / 2.0
+    };
+    painter.galley(egui::pos2(role_left, role_top), role, ink);
+    // Each text line ends 8 before whatever trails it on that line: the
+    // role (centred across both lines, or on the name's line beside a
+    // notice) and the notice on the path's line.
+    let mut path_end = role_left;
+    if let Some(notice) = notice {
+        let galley =
+            painter.layout_no_wrap(notice.to_owned(), CompactStyle::Supporting.font_id(), muted);
+        let at = egui::pos2(inner.right() - galley.size().x, inner.top() + 20.0);
+        let notice_rect = Rect::from_min_size(at, galley.size());
+        path_end = notice_rect.left();
+        painter.galley(at, galley, muted);
+        ui.interact(
+            notice_rect,
+            Id::unique(("fd.compare.identity_notice", identity.file)),
+            Sense::hover(),
+        )
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, notice));
+    }
     let icon = glyph_text(ui.ctx(), Icon::Document);
     if !icon.is_empty() {
         painter.text(
@@ -978,7 +1039,8 @@ fn pinned_identity(ui: &mut Ui, rect: Rect, identity: &PaneIdentity, palette: &P
         );
     }
     let left = inner.left() + 28.0;
-    let width = (role_left - 8.0 - left).max(0.0);
+    let name_width = (role_left - 8.0 - left).max(0.0);
+    let path_width = (path_end - 8.0 - left).max(0.0);
     let detail = format!(
         "{}{}{}",
         identity.path,
@@ -986,14 +1048,20 @@ fn pinned_identity(ui: &mut Ui, rect: Rect, identity: &PaneIdentity, palette: &P
         identity.size_and_date
     );
     // The size and date go first when the row is narrow (frame `29:3648`).
-    let path = if text_width(ui, &detail, CompactStyle::PathDetail) <= width {
+    let path = if text_width(ui, &detail, CompactStyle::PathDetail) <= path_width {
         detail
     } else {
         identity.path.clone()
     };
-    for (text, style, color, top) in [
-        (identity.name.clone(), CompactStyle::GroupEmphasis, ink, 0.0),
-        (path, CompactStyle::PathDetail, muted, 20.0),
+    for (text, style, color, top, width) in [
+        (
+            identity.name.clone(),
+            CompactStyle::GroupEmphasis,
+            ink,
+            0.0,
+            name_width,
+        ),
+        (path, CompactStyle::PathDetail, muted, 20.0, path_width),
     ] {
         let mut job = LayoutJob::single_section(
             text,
