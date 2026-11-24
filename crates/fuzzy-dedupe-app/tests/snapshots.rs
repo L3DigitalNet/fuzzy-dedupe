@@ -56,18 +56,19 @@ mod snapshots {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use egui::accesskit::Role;
+    use egui::accesskit::{Role, Toggled};
     use egui::{Key, Theme, Vec2};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
     use fuzzy_dedupe_app::app::{AppDeps, Clock, FuzzyDedupeApp};
     use fuzzy_dedupe_app::measure::NoMeasurement;
     use fuzzy_dedupe_app::presentation::commands::UiIntent;
-    use fuzzy_dedupe_app::presentation::events;
     use fuzzy_dedupe_app::presentation::state::{
-        CleanupPhase, DialogKind, DialogSubject, MenuKind, PresentationState, ScanStage,
+        CleanupPhase, DialogKind, DialogSubject, MenuKind, PresentationState, RowId, ScanStage,
     };
-    use fuzzy_dedupe_domain::{CompareMode, MemberRole, QueueOrigin};
+    use fuzzy_dedupe_app::presentation::{events, projections};
+    use fuzzy_dedupe_app::ui::dialogs::new_scan;
+    use fuzzy_dedupe_domain::{CompareMode, MemberRole, QueueOrigin, ScanFolder, ScanSetup};
     use fuzzy_dedupe_engine::cleanup_sim::CleanupEvent;
     use fuzzy_dedupe_engine::fixtures::design;
     use fuzzy_dedupe_engine::service::{
@@ -195,7 +196,17 @@ mod snapshots {
                 |ui, app: &mut Option<FuzzyDedupeApp>| {
                     if let Some(app) = app.as_mut() {
                         app.run_logic(ui.ctx());
-                        app.draw(ui);
+                        // kittest's `build_ui_state` hands over a Ui inside an
+                        // 8-unit outer margin, which shifts and shrinks every
+                        // panel. eframe gives `App::ui` the whole client area,
+                        // so the app draws into a child spanning the content
+                        // rect, as it would in the window. (`build_eframe`
+                        // would avoid this, but needs kittest's `eframe`
+                        // feature, which the manifest does not enable.)
+                        // Same rig as `tests/layout.rs`'s `launch`.
+                        let full = ui.ctx().content_rect();
+                        let mut window = ui.new_child(egui::UiBuilder::new().max_rect(full));
+                        app.draw(&mut window);
                     }
                 },
                 None,
@@ -325,13 +336,14 @@ mod snapshots {
         /// whose progress bar repaints every frame.
         fn prepare(self, h: &mut Shell) {
             match self {
-                Self::Findings | Self::FindingsMinimum => {
+                Self::Findings => focus_frame_row(h),
+                Self::FindingsMinimum => {
                     assert_eq!(state(h).scan.stage, ScanStage::Completed);
                     assert!(state(h).scan.results.is_some(), "design results");
                 }
                 Self::Compare | Self::CompareMinimum => open_design_pair(h),
                 Self::MatchingRules => open_dialog(h, DialogKind::MatchingRules),
-                Self::NewScan => open_dialog(h, DialogKind::NewScan),
+                Self::NewScan => open_seeded_new_scan(h),
                 Self::KeyboardShortcuts => open_dialog(h, DialogKind::KeyboardShortcuts),
                 Self::About => open_dialog(h, DialogKind::About),
                 Self::ReviewUniqueText => open_unique_text_review(h),
@@ -354,16 +366,7 @@ mod snapshots {
                     h.run();
                     assert_shown(h, "No findings yet");
                 }
-                Self::Scanning => {
-                    let sample = design::sample();
-                    let s = state_mut(h);
-                    s.scan.stage = ScanStage::Running;
-                    s.scan.progress = Some(sample.scan_progress);
-                    // The animated progress bar never settles; a fixed
-                    // number of frames draws the scanning view.
-                    h.run_steps(4);
-                    assert_shown(h, "Scanning…");
-                }
+                Self::Scanning => scanning(h),
                 Self::NoSearchMatches => {
                     let search = design::sample().search_without_matches;
                     state_mut(h).findings.search.clone_from(&search);
@@ -385,6 +388,7 @@ mod snapshots {
                     assert_shown(h, "Cleanup finished");
                 }
                 Self::MainMenuOpen => {
+                    focus_frame_row(h);
                     h.key_press(Key::F10);
                     h.run();
                     assert_eq!(state(h).dialog.menu(), Some(MenuKind::Main));
@@ -408,6 +412,175 @@ mod snapshots {
         run_until(h, "Compare's comparison", |s| {
             s.compare.comparison.aligned().is_some()
         });
+    }
+
+    /// The view state of frames `13:648`, `37:2466` and `44:3954`: the
+    /// design scenario's expanded groups and its focused row,
+    /// `Design_Spec_draft.txt` in G004, which enables the toolbar's Compare.
+    ///
+    /// The expanded set is the fixture's (`DesignSample::expanded_groups`):
+    /// G003, G002, G004 and G009, plus G001 and G005, which the reference
+    /// PNG also shows expanded; every other group stays collapsed. The row
+    /// is focused in Findings' own state with `reveal_focus`, as a keyboard
+    /// move leaves it, so the table scrolls it into view. Keyboard focus is
+    /// deliberately not given to the table: the frames show the row's fill
+    /// without the focus ring or the full-path tooltip that table focus
+    /// draws (F12).
+    fn focus_frame_row(h: &mut Shell) {
+        assert_eq!(state(h).scan.stage, ScanStage::Completed);
+        let sample = design::sample();
+        let file = sample
+            .focused_file
+            .expect("the design scenario's focused row");
+        let results = state(h).scan.results.clone().expect("design results");
+        let group = results.group_of(file).expect("the focused row's group");
+        let member = group.member(file).expect("the focused member");
+        assert_eq!(member.name, FUZZY_ROW, "the frame focuses {FUZZY_ROW}");
+
+        let expanded: BTreeSet<String> = results
+            .groups
+            .iter()
+            .filter(|g| state(h).findings.expanded.contains(&g.id))
+            .map(|g| g.label.clone())
+            .collect();
+        let frame: BTreeSet<String> = ["G001", "G005", "G003", "G002", "G004", "G009"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(expanded, frame, "the frame's expanded groups, no others");
+        assert_eq!(
+            state(h).findings.expanded.len(),
+            frame.len(),
+            "no expanded group outside these results"
+        );
+
+        let findings = &mut state_mut(h).findings;
+        findings.focused = Some(RowId::Member {
+            group: group.id,
+            file,
+        });
+        findings.reveal_focus = true;
+        h.run();
+        assert_shown(h, FUZZY_ROW);
+        assert_shown(h, &projections::group_label(group));
+        // The toolbar's Compare is the rightmost button of that name; the
+        // rail's Compare entry shares the name.
+        let compare = h
+            .query_all_by_role_and_label(Role::Button, "Compare")
+            .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+            .expect("the toolbar's Compare");
+        assert!(
+            !compare.accesskit_node().is_disabled(),
+            "Compare is disabled with {FUZZY_ROW} focused"
+        );
+    }
+
+    /// Frame `16:806`: New scan opened on a stored setup with three
+    /// folders, the first protected, and the design fixture's explicit file
+    /// types, committed through the same `SetScanSetup` intent Start scan
+    /// sends. The empty-list "All plain-text files" state is
+    /// `conform_popups`' business, not this frame's.
+    ///
+    /// The folders are crate-relative (`src`, `tests`, `assets`), resolved
+    /// against the package root that cargo and nextest run tests from. The
+    /// popup checks each folder's existence when it opens and marks a
+    /// missing one in red, so the folders must exist; and the listed path
+    /// is drawn verbatim, so an absolute path (`CARGO_MANIFEST_DIR`) would
+    /// put the checkout location into the baseline's pixels. The fixture's
+    /// own `~/Documents/…` folders exist nowhere and would all show as not
+    /// found.
+    fn open_seeded_new_scan(h: &mut Shell) {
+        const FOLDERS: [(&str, bool); 3] = [("src", true), ("tests", false), ("assets", false)];
+        let file_types = design::sample().new_scan.file_types_shown;
+        assert!(!file_types.is_empty(), "an explicit file-type list");
+        let setup = ScanSetup {
+            folders: FOLDERS
+                .iter()
+                .map(|(path, protect)| ScanFolder {
+                    path: PathBuf::from(path),
+                    protect: *protect,
+                })
+                .collect(),
+            file_types: file_types.clone(),
+        };
+        push(h, UiIntent::SetScanSetup(setup.clone()));
+        h.run();
+        assert_eq!(state(h).preferences.scan_setup, setup);
+        open_dialog(h, DialogKind::NewScan);
+
+        for (path, protect) in FOLDERS {
+            let shown = new_scan::shown_path(Path::new(path));
+            assert_shown(h, &shown);
+            let toggled = h
+                .get_by_role_and_label(Role::CheckBox, &format!("Protect files in {shown}"))
+                .accesskit_node()
+                .toggled();
+            let expected = if protect {
+                Toggled::True
+            } else {
+                Toggled::False
+            };
+            assert_eq!(toggled, Some(expected), "Protect files in {shown}");
+        }
+        assert!(
+            h.query_by_label_contains(new_scan::MISSING_FOLDER)
+                .is_none(),
+            "a seeded folder is shown as not found"
+        );
+        let summary = file_types
+            .iter()
+            .map(|t| format!(".{t}"))
+            .collect::<Vec<_>>()
+            .join("   ");
+        assert_shown(h, &summary);
+        assert!(
+            h.query_by_label(new_scan::ALL_FILE_TYPES).is_none(),
+            "the explicit list is shown as {:?}",
+            new_scan::ALL_FILE_TYPES
+        );
+    }
+
+    /// Frame `28:2171`: a scan running after Start scan cleared the queue
+    /// and the results it replaces (FR-026).
+    ///
+    /// Not reached through the real Start scan: the simulated scan runs on
+    /// its own threads for a wall time the rig does not control
+    /// (`scan_sim::job`, files × a fixed cost), then completes, and its
+    /// progress events carry the measured counts and elapsed time, so a
+    /// capture could neither hold the running state nor show stable text.
+    /// Nor does Start clear the presentation's results: they stay until the
+    /// scan's `Completed` event replaces them (`events::install_results`).
+    /// So the queue is cleared by Start scan's own command, `ClearForNewScan`,
+    /// through the review service, and the rig then drops the results and
+    /// applies the design sample's progress.
+    fn scanning(h: &mut Shell) {
+        assert!(state(h).queue.queued_count() > 0, "the design queue");
+        push(
+            h,
+            UiIntent::Review {
+                command: ReviewCommand::ClearForNewScan,
+                invoker: None,
+            },
+        );
+        h.run();
+        assert_eq!(state(h).queue.queued_count(), 0, "Start's clear ran");
+
+        let sample = design::sample();
+        let s = state_mut(h);
+        s.scan.results = None;
+        s.scan.stage = ScanStage::Running;
+        s.scan.progress = Some(sample.scan_progress);
+        s.findings.revision += 1;
+        // The animated progress bar never settles; a fixed number of
+        // frames draws the scanning view.
+        h.run_steps(4);
+        assert_shown(h, "Scanning…");
+        assert!(state(h).scan.results.is_none(), "results cleared");
+        let review = h.get_by_role_and_label(Role::Button, "Review cleanup (0)");
+        assert!(
+            review.accesskit_node().is_disabled(),
+            "Review cleanup (0) is enabled"
+        );
     }
 
     /// Frame `16:932`: a queue request on the fuzzy row, which answers

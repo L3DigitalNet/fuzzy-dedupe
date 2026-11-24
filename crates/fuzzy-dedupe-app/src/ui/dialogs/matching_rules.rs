@@ -352,7 +352,13 @@ fn similarity_field(ui: &mut Ui, draft: &mut RulesDraft, palette: &Palette) {
         .corner_radius(theme::CORNER_RADIUS)
         .inner_margin(egui::Margin::symmetric(8, 0))
         .show(ui, |ui| {
-            ui.set_min_size(Vec2::new(VALUE_WIDTH - 16.0, CONTROL_HEIGHT - 2.0));
+            // An exact width, not a minimum: a frame's content may take the
+            // whole rest of the row, and the edit below sizes itself to
+            // `available_width()`, so a minimum alone let the box grow to
+            // about 195 units against the frame's 96 (T40 item P7). The
+            // 8-unit margins and the border sit outside this width.
+            ui.set_width(VALUE_WIDTH - 16.0 - 2.0 * theme::BORDER_WIDTH);
+            ui.set_min_height(CONTROL_HEIGHT - 2.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(
@@ -423,6 +429,22 @@ pub(crate) fn check_box(
     accessible: &str,
     enabled: bool,
 ) -> Response {
+    alert_check_box(ui, on, visible, accessible, enabled, false)
+}
+
+/// [`check_box`], with the unchecked box's border in the red token while
+/// `alert` holds: Review unique text's acknowledgment in the prompt state
+/// of `44:4079`. The red border is drawn with the box, apart from the
+/// focus ring, so it still shows when the prompt moves focus to the box.
+pub(crate) fn alert_check_box(
+    ui: &mut Ui,
+    on: bool,
+    visible: Option<&str>,
+    accessible: &str,
+    enabled: bool,
+    alert: bool,
+) -> Response {
+    // Spec §11.7: the checkbox square is 16 units.
     const BOX: f32 = 16.0;
     const GAP: f32 = 8.0;
     let palette = theme::palette(mode_of(ui.ctx()));
@@ -459,6 +481,8 @@ pub(crate) fn check_box(
         );
         let (fill, border) = if on {
             (Token::Primary, Token::Primary)
+        } else if alert {
+            (Token::Surface, Token::Red)
         } else {
             (Token::Surface, Token::Quiet)
         };

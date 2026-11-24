@@ -70,6 +70,20 @@ pub const EXPANDED_SIZE: [f32; 2] = [640.0, 778.0];
 /// File types the summary lists before "+N more", as in `26:1338`.
 const SHOWN_FILE_TYPES: usize = 6;
 
+/// The summary for an empty file-type list.
+///
+/// Owner decision 2026-11-24 (spec 0.13): a fresh scan setup selects every
+/// supported file type, which under C-013 is every decodable plain-text
+/// file. SEMANTIC TRAP: an empty `ScanSetup::file_types` therefore means
+/// "no extension filter", not "no file types". Nothing here fills the list
+/// in to express "all": the empty list is what Start scan commits and
+/// passes to the engine, so the preferences schema (C-08 v1) is unchanged,
+/// and a future real scanner must read empty as unfiltered. The MS-1
+/// simulated scan never reads the extensions (`scan_sim::job` only copies
+/// the request's setup into its results). Clearing the Edit… field returns
+/// to this state.
+pub const ALL_FILE_TYPES: &str = "All plain-text files";
+
 /// The popup's draft, created when it opens and dropped when it closes, so
 /// closing never commits it (spec §11.6).
 ///
@@ -225,6 +239,8 @@ fn start(draft: &mut Form, cx: &mut DialogCx<'_>) -> DialogResponse {
         draft.rules_expanded = true;
         return DialogResponse::KeepOpen;
     };
+    // An empty `file_types` is committed and sent as is: it means every
+    // plain-text file, not none (`ALL_FILE_TYPES`).
     let setup = ScanSetup {
         folders: draft.folders.clone(),
         file_types: draft.file_types.clone(),
@@ -260,9 +276,9 @@ fn blocking_problem(draft: &Form) -> Option<&'static str> {
         .any(|f| draft.missing.contains(&f.path))
     {
         Some("Remove or replace the folder that was not found.")
-    } else if draft.file_types.is_empty() {
-        Some("Choose at least one file type.")
     } else {
+        // No file-type check: an empty list is a valid setup meaning every
+        // plain-text file (see `ALL_FILE_TYPES`).
         None
     }
 }
@@ -460,10 +476,11 @@ fn file_types(ui: &mut Ui, draft: &mut Form, palette: &Palette) {
     });
 }
 
-/// The summary of `26:1338`: up to six extensions, then "+N more".
+/// The summary of `26:1338`: up to six extensions, then "+N more"; for
+/// the empty list, [`ALL_FILE_TYPES`].
 fn file_types_summary(types: &[String]) -> String {
     if types.is_empty() {
-        return "none".to_owned();
+        return ALL_FILE_TYPES.to_owned();
     }
     let mut parts: Vec<String> = types
         .iter()

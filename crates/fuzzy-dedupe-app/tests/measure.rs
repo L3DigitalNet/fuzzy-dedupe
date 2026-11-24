@@ -691,7 +691,8 @@ mod measure {
                 }
                 copies.extend(run.copies());
             });
-            assert_eq!(wraps, [false, true, false], "Alt+Z at 4 s and at 8 s");
+            // Wrap starts on (frame `13:1304`); each Alt+Z flips it.
+            assert_eq!(wraps, [true, false, true], "Alt+Z at 4 s and at 8 s");
             assert_eq!(copies.len(), 1, "one copy at 4 s: {copies:?}");
             assert!(
                 panes.contains(&copies[0]),
@@ -847,8 +848,10 @@ mod measure {
         #[test]
         fn measure_preferences_isolates_a_run_from_the_saved_file() {
             let dirs = dirs_for("isolated");
+            // Wrap off: the opposite of the default, so starting on the
+            // defaults is observable.
             let saved = PreferencesState {
-                compare_wrap: true,
+                compare_wrap: false,
                 zoom: Zoom::from_percent(150).expect("on the zoom grid"),
                 ..PreferencesState::default()
             };
@@ -883,7 +886,7 @@ mod measure {
                     wraps.push(wrap);
                 }
             });
-            assert_eq!(wraps, [false, true, false], "the Alt+Z toggles ran");
+            assert_eq!(wraps, [true, false, true], "the Alt+Z toggles ran");
             let app = run.harness.state_mut().as_mut().expect("app");
             eframe::App::on_exit(app);
             assert_eq!(

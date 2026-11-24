@@ -590,23 +590,66 @@ mod layout {
                     &format!("{hidden} hides below 1280"),
                 );
             }
-            // The 1128-unit collapsed column set is wider than the 952-unit
-            // table and scrolls sideways; `egui_table` paints only the
-            // columns in view, so a trailing one may be absent here.
-            c.that(header.len() >= 6, "the leading six columns are drawn");
+            c.that(
+                header.len() == shown.len(),
+                "every collapsed-set column is drawn",
+            );
         }
         c.units(
             header[0].left(),
             table.left() + 1.0,
             "Queue column left edge",
         );
-        for (cell, (title, width)) in header.iter().zip(&shown) {
-            c.units(cell.width(), *width, &format!("{title} column width"));
+        if reference {
+            for (cell, (title, width)) in header.iter().zip(&shown) {
+                c.units(cell.width(), *width, &format!("{title} column width"));
+            }
+        } else {
+            check_flexible_columns(&mut c, &header, &shown, table);
         }
         for pair in header.windows(2) {
             c.units(pair[1].left(), pair[0].right(), "adjacent column edges");
         }
         c.finish(&format!("Findings at {} × {}", size.x, size.y));
+    }
+
+    /// The minimum window's columns (T40 F8): File name and Folder between
+    /// their minimums and reference widths, filling the rest of the table;
+    /// every other column at its reference width; Decision in the table.
+    fn check_flexible_columns(c: &mut Checks, header: &[Rect], shown: &[(&str, f32)], table: Rect) {
+        // T40 F8, §11.4: "File name and folder widths are flexible".
+        let mut flexible = 0.0;
+        for (cell, (title, width)) in header.iter().zip(shown) {
+            let minimum = grouped_table::FLEX_MINIMUMS
+                .iter()
+                .find(|(column, _)| grouped_table::column_title(*column) == *title)
+                .map(|(_, minimum)| *minimum);
+            if let Some(minimum) = minimum {
+                flexible += cell.width();
+                c.that(
+                    cell.width() >= minimum - 1.0 && cell.width() <= width + 1.0,
+                    &format!("{title} width {} within {minimum}..={width}", cell.width()),
+                );
+            } else {
+                c.units(cell.width(), *width, &format!("{title} column width"));
+            }
+        }
+        let fixed: f32 = shown
+            .iter()
+            .filter(|(title, _)| !["File name", "Folder"].contains(title))
+            .map(|(_, width)| width)
+            .sum();
+        let rest = table.width() - 2.0 - grouped_table::SCROLLBAR_RESERVE - fixed;
+        c.units(
+            flexible,
+            rest,
+            "File name + Folder fill the rest of the table",
+        );
+        let decision = header.last().copied().unwrap_or(Rect::NOTHING);
+        c.that(
+            table.contains_rect(decision),
+            &format!("Decision {decision:?} inside the table {table:?}"),
+        );
     }
 
     #[test]

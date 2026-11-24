@@ -297,18 +297,30 @@ mod info_popups {
             .get_all_by_role(Role::ListItem)
             .map(|node| node.accesskit_node().label().unwrap_or_default())
             .collect();
-        let expected: Vec<String> = SHORTCUT_TABLE.iter().map(row_name).collect();
+        let mut expected: Vec<String> = SHORTCUT_TABLE.iter().map(row_name).collect();
+        // T40 P6: frame `44:3681`'s shortcuts-window row, after Main menu.
+        let main_menu = expected
+            .iter()
+            .position(|r| r.starts_with("Main menu: "))
+            .expect("the Main menu row");
+        expected.insert(main_menu + 1, "Keyboard shortcuts: F1 / Ctrl+?".to_owned());
         assert_eq!(
             shown, expected,
-            "one displayed row per §11.10 row, in order"
+            "one displayed row per §11.10 row, in order, plus the frame's shortcuts-window row"
         );
 
         for heading in ["Global", "Findings", "Compare", "Popups"] {
             h.get_by_role_and_label(Role::Heading, heading);
         }
         // One key cap per chord, in the path style (Figma `DD/Compact/Key cap`).
+        // §11.10 separates chords with " / ", ", " and " or " (T40 P6).
         for row in SHORTCUT_TABLE {
-            for chord in row.keys.split(" / ") {
+            for chord in row
+                .keys
+                .split(" / ")
+                .flat_map(|k| k.split(", "))
+                .flat_map(|k| k.split(" or "))
+            {
                 assert!(
                     painted_in(&h, chord, CompactStyle::PathDetail),
                     "key cap {chord:?} of {:?}",

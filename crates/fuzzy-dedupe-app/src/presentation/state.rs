@@ -275,7 +275,9 @@ impl Default for CompareState {
             counterpart_snapshot: None,
             comparison: ComparisonSlot::default(),
             mode: CompareMode::Original,
-            wrap: false,
+            // Frame `13:1304` shows Wrap on; `PreferencesState`'s default
+            // agrees, so a fresh Compare and a fresh preferences file match.
+            wrap: true,
             linked_scroll: true,
             split_ratio: 0.5,
             active_change: 0,
@@ -370,7 +372,9 @@ impl DialogKind {
 pub enum MenuKind {
     /// The main menu (rail Menu entry, F10).
     Main,
-    /// Findings toolbar Actions ▾.
+    /// The Actions menu (§11.3): Findings' Actions ▾, or Compare's More
+    /// actions ⋯, which holds the toolbar actions that overflowed. Each
+    /// view draws it only while it is the workspace.
     Actions,
     /// Findings toolbar Sort ▾.
     Sort,
@@ -827,7 +831,10 @@ impl Default for PreferencesState {
             rail_collapsed: false,
             findings_column_widths: BTreeMap::new(),
             compare_split_ratio: 0.5,
-            compare_wrap: false,
+            // On, as frame `13:1304` shows it (T40). A stored `wrap` in
+            // `preferences.toml` still wins; this is only the value a file
+            // without one, or no file, starts from (`CompareV1::default`).
+            compare_wrap: true,
             compare_linked_scroll: true,
             scan_setup: ScanSetup {
                 folders: Vec::new(),
