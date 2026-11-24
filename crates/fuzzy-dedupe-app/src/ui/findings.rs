@@ -350,8 +350,31 @@ fn compare_target(
     Some((row, file, view.counterpart?))
 }
 
+/// Copies the remembered column widths into Findings' state once per
+/// context, before Findings first draws (C-08), as `ui/compare.rs`
+/// `adopt_preferences` does for Compare.
+///
+/// The width sync at the end of [`show`] copies `FindingsState` into the
+/// preferences every frame. Without this step it would copy the empty
+/// startup map over the widths `preferences.toml` restored, and the next
+/// write would store that empty map, losing every saved width on restart.
+/// Once only, so a later resize still flows to the preferences and a new
+/// scan's results never re-seed; an empty saved map adopts as the
+/// reference widths.
+fn adopt_preferences(ctx: &egui::Context, cx: &mut WorkspaceCx<'_>) {
+    let key = Id::unique("fd.findings.preferences_adopted");
+    if ctx.data(|d| d.get_temp::<bool>(key)).is_some() {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, true));
+    cx.findings
+        .column_widths
+        .clone_from(&cx.preferences.findings_column_widths);
+}
+
 /// The workspace body below the toolbar: filter row and table.
 pub fn show(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
+    adopt_preferences(ui.ctx(), cx);
     sync_menu(ui, cx);
     grouped_table::ensure_glyphs(ui.ctx());
     let palette = theme::palette(mode_of(ui.ctx()));
