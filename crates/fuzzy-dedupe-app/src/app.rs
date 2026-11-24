@@ -319,8 +319,9 @@ const FOLLOWUP_ROUNDS: usize = 4;
 
 impl FuzzyDedupeApp {
     /// Installs the theme on `ctx`, starts the engine on the startup
-    /// scenario (`measure::startup`, the design scenario unless a
-    /// measurement run chose another), and runs the startup log expiry.
+    /// scenario (`measure::startup`: the design scenario unless a
+    /// measurement run or `FUZZY_DEDUPE_SCENARIO` chose another), and runs
+    /// the startup log expiry.
     ///
     /// # Errors
     ///

@@ -7,7 +7,20 @@
 //! `scenario,run,metric,value_ms`, to standard output (plan D-010), then
 //! quits. Without the variable the mode is off and the app is unchanged:
 //! [`configured`] returns [`NoMeasurement`] and [`startup`] the design
-//! scenario.
+//! scenario, or the fixture scenario [`SCENARIO_VAR`] names.
+//!
+//! Startup scenario (plan T39): a normal launch with
+//! `FUZZY_DEDUPE_SCENARIO=<name>`, a [`ScenarioKind::name`], starts on that
+//! fixture scenario, and New scan replays it, so a manual pass can reach
+//! every C-03 fixture state. This module is the single source of the
+//! startup scenario: [`startup`] decides it once per process through the
+//! pure [`choose_startup`], and both `FuzzyDedupeApp::new` (adoption) and
+//! the New scan dialog (`startup_scenario`, the replay) read that one
+//! decision. A configured measurement run's own scenario wins over the
+//! variable; a refused [`MODE_VAR`] value leaves the mode off, so the
+//! variable then applies. It changes nothing else: preferences load and
+//! write as for any normal launch, because only
+//! [`FrameHook::isolates_preferences`] isolates them.
 //!
 //! Activation: `FUZZY_DEDUPE_MEASURE=<scenario>[,run=<n>][,secs=<n>]`, for
 //! example `FUZZY_DEDUPE_MEASURE=t2,run=3`. The scenario is `t1` to `t4`;
@@ -61,6 +74,9 @@ use recorder::{MeasureClock, MonotonicClock, Recorder};
 
 /// The variable that turns the measurement mode on.
 pub const MODE_VAR: &str = "FUZZY_DEDUPE_MEASURE";
+
+/// The variable that names the fixture scenario a normal launch starts on.
+pub const SCENARIO_VAR: &str = "FUZZY_DEDUPE_SCENARIO";
 
 /// A run's length unless `secs` says otherwise: C-10's 60 s minimum.
 pub const DEFAULT_RUN_LENGTH: Duration = Duration::from_mins(1);
@@ -318,19 +334,112 @@ impl StartupScenario {
     }
 }
 
-/// The startup data for `mode`: the scenario's own when measuring,
-/// otherwise the design scenario.
-#[must_use]
-pub fn startup_for(mode: Option<&MeasureConfig>) -> StartupScenario {
-    mode.map_or(StartupScenario::Fixture(ScenarioKind::Design), |m| {
-        m.scenario.startup()
-    })
+/// Why a [`SCENARIO_VAR`] value did not decide the startup scenario.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScenarioNotice {
+    /// The value, possibly empty, is no [`ScenarioKind::name`]; the app
+    /// starts on the design scenario.
+    Unknown(String),
+    /// A measurement run is configured, and its scenario wins.
+    IgnoredForMeasurement,
 }
 
-/// The data the app starts on in this process.
+impl std::fmt::Display for ScenarioNotice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown(value) => {
+                // From `ScenarioKind::ALL`, so a new kind is listed without
+                // an edit here.
+                let names: Vec<&str> = ScenarioKind::ALL.iter().map(|k| k.name()).collect();
+                write!(
+                    f,
+                    "{SCENARIO_VAR}: unknown scenario {value:?}, starting on {} (valid: {})",
+                    ScenarioKind::Design.name(),
+                    names.join(", ")
+                )
+            }
+            Self::IgnoredForMeasurement => write!(
+                f,
+                "{SCENARIO_VAR} ignored: {MODE_VAR} is set, and the measurement run starts on its own scenario"
+            ),
+        }
+    }
+}
+
+/// The startup decision: the data to start on, and what to tell the user
+/// about the [`SCENARIO_VAR`] value, if anything.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupChoice {
+    pub startup: StartupScenario,
+    pub notice: Option<ScenarioNotice>,
+}
+
+/// Decides the startup data from the measurement config and the
+/// [`SCENARIO_VAR`] value, `None` when it is unset. A measurement config
+/// wins, with [`ScenarioNotice::IgnoredForMeasurement`] when a value is
+/// also present, valid or not. Otherwise a value that is exactly a
+/// [`ScenarioKind::name`] selects that kind; any other value, the empty one
+/// included, gives the design scenario and [`ScenarioNotice::Unknown`].
+/// Pure, so tests never touch the process environment.
+#[must_use]
+pub fn choose_startup(mode: Option<&MeasureConfig>, scenario: Option<&str>) -> StartupChoice {
+    let design = StartupScenario::Fixture(ScenarioKind::Design);
+    match (mode, scenario) {
+        (Some(mode), value) => StartupChoice {
+            startup: mode.scenario.startup(),
+            notice: value.map(|_| ScenarioNotice::IgnoredForMeasurement),
+        },
+        (None, None) => StartupChoice {
+            startup: design,
+            notice: None,
+        },
+        (None, Some(value)) => match ScenarioKind::from_name(value) {
+            Some(kind) => StartupChoice {
+                startup: StartupScenario::Fixture(kind),
+                notice: None,
+            },
+            None => StartupChoice {
+                startup: design,
+                notice: Some(ScenarioNotice::Unknown(value.to_owned())),
+            },
+        },
+    }
+}
+
+/// The startup data for `mode` with [`SCENARIO_VAR`] unset: the scenario's
+/// own when measuring, otherwise the design scenario.
+#[must_use]
+pub fn startup_for(mode: Option<&MeasureConfig>) -> StartupScenario {
+    choose_startup(mode, None).startup
+}
+
+/// The data the app starts on in this process, decided once.
+///
+/// Once, not per call: `FuzzyDedupeApp::new` adopts this and every New scan
+/// replays its kind, so a second read that disagreed would replay a
+/// scenario other than the one the app shows, and the notice would repeat
+/// on every scan.
 #[must_use]
 pub fn startup() -> StartupScenario {
-    startup_for(mode().as_ref())
+    static STARTUP: OnceLock<StartupScenario> = OnceLock::new();
+    *STARTUP.get_or_init(|| {
+        // Lossy, not `std::env::var`: a non-Unicode value can name no
+        // scenario, so it takes the unknown-value path, with its replacement
+        // characters visible in the notice, instead of reading as unset.
+        let value = std::env::var_os(SCENARIO_VAR).map(|v| v.to_string_lossy().into_owned());
+        let choice = choose_startup(mode().as_ref(), value.as_deref());
+        match &choice.notice {
+            Some(notice @ ScenarioNotice::Unknown(_)) => {
+                eprintln!("fuzzy-dedupe: {notice}");
+                tracing::warn!(%notice, "startup scenario not recognized");
+            }
+            Some(notice @ ScenarioNotice::IgnoredForMeasurement) => {
+                eprintln!("fuzzy-dedupe: {notice}");
+            }
+            None => {}
+        }
+        choice.startup
+    })
 }
 
 /// The scenario kind New scan replays: [`startup`]'s kind. The app adopts
