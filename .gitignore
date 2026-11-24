@@ -31,3 +31,8 @@ rustc-ice-*.txt
 
 # Figma agent skills: no upstream license, so they are installed locally and never tracked (convention C1)
 .agents/skills/figma-*/
+
+# egui_kittest snapshot by-products: only reviewed <name>.png baselines are tracked (plan T22)
+crates/fuzzy-dedupe-app/tests/snapshots/*.new.png
+crates/fuzzy-dedupe-app/tests/snapshots/*.diff.png
+crates/fuzzy-dedupe-app/tests/snapshots/*.old.png

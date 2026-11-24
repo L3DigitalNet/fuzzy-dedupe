@@ -80,10 +80,20 @@ tracing = "=0.1.44"
 tracing-appender = "=0.2.5"
 tracing-subscriber = "=0.3.23"
 
+# `snapshot` builds tests/snapshots.rs, the wgpu-rendered review-frame
+# snapshots (plan T22, D-007). Only rust.yml's `ui-test` job enables it,
+# on a runner with Mesa lavapipe: the default build, every other job and
+# rexec runs neither compile those tests nor need a GPU adapter. The two
+# egui_kittest features are enabled here, not on the dev-dependency, so the
+# default test build does not compile the renderer and image comparison
+# either.
+[features]
+snapshot = ["egui_kittest/snapshot", "egui_kittest/wgpu"]
+
 [dev-dependencies]
-# Headless interaction tests plus wgpu-rendered snapshot comparison (T22),
-# on the same renderer the application ships with (spec §8.3).
-egui_kittest = { version = "=0.37.0", features = ["snapshot", "wgpu"] }
+# Headless interaction tests; with the `snapshot` feature, also snapshot
+# comparison on the same wgpu renderer the application ships with (spec §8.3).
+egui_kittest = "=0.37.0"
 
 [lints]
 workspace = true

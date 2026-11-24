@@ -150,6 +150,16 @@ path = "docs/design/reference/*.png"
 SPDX-FileCopyrightText = "2026 L3Digital LLC"
 SPDX-License-Identifier = "GPL-3.0-only"
 
+# D-012 class (a): the egui_kittest snapshot baselines (MS-1 plan T22),
+# rendered from the project's own UI by rust.yml's `ui-test` job. The glob is
+# `*.png` in the one baseline directory, not `**`: it cannot reach
+# tests/snapshots.rs beside the directory, or any other protected source
+# path, even if a file is later added inside it.
+[[annotations]]
+path = "crates/fuzzy-dedupe-app/tests/snapshots/*.png"
+SPDX-FileCopyrightText = "2026 L3Digital LLC"
+SPDX-License-Identifier = "GPL-3.0-only"
+
 # D-012 class (d): unmodified IBM Plex TTFs (THIRD-PARTY-NOTICES.md). The
 # holder is verbatim from LICENSES/OFL-1.1.txt; keep the two in agreement.
 # The glob is `IBMPlex*`, not `*.ttf`: the fonts directory also holds Noto
