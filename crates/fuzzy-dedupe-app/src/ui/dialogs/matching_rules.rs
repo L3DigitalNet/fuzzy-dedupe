@@ -26,7 +26,9 @@
 //! C-01 `MatchMode` have two (Exact only, Exact + fuzzy text), so the menu
 //! offers those two under the frame's labels.
 
-use egui::{Align, Color32, Layout, Response, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{
+    Align, AtomExt as _, Color32, Layout, Rect, Response, RichText, Sense, Stroke, Ui, Vec2,
+};
 use fuzzy_dedupe_domain::{IgnoreOptions, MatchMode, MatchingRules, Permille, RulesRevision};
 
 use crate::presentation::commands::UiIntent;
@@ -270,10 +272,30 @@ pub fn submit(draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
 pub fn rules_controls(ui: &mut Ui, draft: &mut RulesDraft, palette: &Palette, salt: &str) {
     labelled_row(ui, "Match mode", |ui| {
         let selected = draft.mode.map_or("Choose…", mode_label);
+        // The button's height comes from `interact_size.y` (egui's button
+        // style); `ComboBox::height` caps only the dropdown list. Scoped to
+        // this row's child Ui, so no other control changes height.
+        ui.spacing_mut().interact_size.y = CONTROL_HEIGHT;
+        // Frame `16:735` centres the label with a small chevron right after
+        // it. egui always adds its own icon atom, growing and pinned to the
+        // right edge, so that icon paints nothing and the chevron travels
+        // with the label. The leading grow atom is as wide as that blank
+        // icon, so the two split the spare width evenly and the label and
+        // chevron sit centred between them.
+        let blank = Vec2::new(ui.spacing().icon_width, 0.0);
+        let chevron = egui::Atom::paint(Vec2::new(8.0, 8.0), |ui, args| {
+            let r = Rect::from_center_size(args.rect.center(), Vec2::new(6.0, 3.5));
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![r.left_top(), r.right_top(), r.center_bottom()],
+                args.fallback_text_color,
+                Stroke::NONE,
+            ));
+        });
         egui::ComboBox::from_id_salt((salt, "mode"))
             .width(MODE_WIDTH)
             .height(CONTROL_HEIGHT * 4.0)
-            .selected_text(selected)
+            .selected_text((egui::Atom::grow().atom_size(blank), selected, chevron))
+            .icon(|_, _, _, _| {})
             .show_ui(ui, |ui| {
                 for mode in [MatchMode::ExactOnly, MatchMode::ExactAndFuzzy] {
                     let chosen = draft.mode == Some(mode);

@@ -781,10 +781,9 @@ impl View<'_> {
             );
         }
 
-        let mut detail = self.folder(item.counterpart);
-        if self.protected(item.counterpart) {
-            detail.push_str(" · protected");
-        }
+        let marker = self
+            .protected(item.counterpart)
+            .then(|| self.text(" · protected", CompactStyle::Supporting, Token::Muted));
         let state_style = if matches!(status, DialogStatus::Ready | DialogStatus::Waiting) {
             CompactStyle::Table
         } else {
@@ -806,13 +805,16 @@ impl View<'_> {
             at(2),
             [self.text(self.match_label(item), CompactStyle::Table, Token::Ink)],
         );
-        cell(
+        kept_cell(
             ui,
             at(3),
-            [
-                self.text(self.name(item.counterpart), CompactStyle::Table, Token::Ink),
-                self.text(detail, CompactStyle::Supporting, Token::Muted),
-            ],
+            self.text(self.name(item.counterpart), CompactStyle::Table, Token::Ink),
+            self.text(
+                self.folder(item.counterpart),
+                CompactStyle::Supporting,
+                Token::Muted,
+            ),
+            marker,
         );
         cell(
             ui,
@@ -1107,6 +1109,73 @@ fn cell_rect(row: Rect, widths: &[f32; 6], index: usize) -> Rect {
         egui::pos2(left, row.top()),
         Vec2::new(widths[index], row.height()),
     )
+}
+
+/// The Kept copy cell: the kept copy's name over its folder, and, when the
+/// kept copy is protected, the "· protected" marker after the folder.
+///
+/// The marker is a safety display (Q-R3-1): it is never elided, so a reader
+/// always sees that the copy being kept is protected. Only the folder
+/// shortens, in the same truncated ellipsis form as [`cell`], into what
+/// the marker leaves of the cell. The marker is measured unwrapped and
+/// never truncated; Kept copy's 112-unit floor in [`MIN_COLUMNS`] is wider
+/// than the marker, and past that floor the table scrolls sideways, so the
+/// marker stays reachable at every size and zoom.
+///
+/// The folder and the marker are painted as one accessible label carrying
+/// their full joined text, as the single label this cell drew before did,
+/// so the accessible name stays "<folder> · protected". Rejected: two
+/// `Label`s side by side, which would split that name in two. Centring
+/// follows [`cell`]: the block's height is known before anything is added.
+fn kept_cell(ui: &mut Ui, rect: Rect, name: RichText, folder: RichText, marker: Option<RichText>) {
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let lay = |ui: &Ui, text: RichText, wrap, width| {
+        egui::WidgetText::from(text).into_galley(
+            ui,
+            Some(wrap),
+            width,
+            egui::FontSelection::Default,
+        )
+    };
+    let name = lay(&ui, name, egui::TextWrapMode::Truncate, rect.width());
+    let marker = marker.map(|m| lay(&ui, m, egui::TextWrapMode::Extend, f32::INFINITY));
+    let marker_width = marker.as_ref().map_or(0.0, |m| m.size().x);
+    let folder = lay(
+        &ui,
+        folder,
+        egui::TextWrapMode::Truncate,
+        (rect.width() - marker_width).max(0.0),
+    );
+    let line = Vec2::new(
+        folder.size().x + marker_width,
+        marker
+            .as_ref()
+            .map_or(folder.size().y, |m| m.size().y.max(folder.size().y)),
+    );
+    ui.add_space(((rect.height() - name.size().y - line.y) / 2.0).max(0.0));
+    ui.add(egui::Label::new(name));
+    let full = match &marker {
+        Some(m) => format!("{}{}", folder.text(), m.text()),
+        None => folder.text().to_owned(),
+    };
+    let (at, response) = ui.allocate_exact_size(line, egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), &full));
+    if ui.is_rect_visible(at) {
+        // The galleys carry their own colours from the RichText; the
+        // fallback colour is never used.
+        let fallback = ui.visuals().text_color();
+        let folder_width = folder.size().x;
+        ui.painter().galley(at.min, folder, fallback);
+        if let Some(marker) = marker {
+            ui.painter()
+                .galley(at.min + Vec2::new(folder_width, 0.0), marker, fallback);
+        }
+    }
 }
 
 /// One table cell: its lines stacked, truncated rather than wrapped into
