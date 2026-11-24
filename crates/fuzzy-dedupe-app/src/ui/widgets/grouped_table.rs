@@ -33,6 +33,15 @@
 //! letting `egui_table` keep widths itself, because on a table it has not
 //! seen it runs an auto-size pass that shrinks every column to its content,
 //! which loses the §11.4 reference widths on the first frame.
+//!
+//! Flexible columns (§11.4: "File name and folder widths are flexible"):
+//! the widths drawn are [`fitted_widths`] of the stored ones, which equal
+//! them whenever the table has room, as at 1600 × 960. Below that, File
+//! name and Folder give way first, down to [`FLEX_MINIMUMS`], then every
+//! other column but Queue gives way proportionally down to its own floor,
+//! and only then does the table scroll sideways. The stored widths, which
+//! the preferences keep, are never rewritten by fitting: a window made wide
+//! again draws the user's widths again.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -71,6 +80,25 @@ pub const OPTIONAL: [ColumnId; 4] = [
 ];
 /// The row menu's width (frame `28:3719`).
 pub const ROW_MENU_WIDTH: f32 = 250.0;
+/// What the body reserves right of the columns for its scrollbar: the
+/// reference table's 1422-unit inner width less the 1408 the §11.4 widths
+/// total (frame `13:648`).
+pub const SCROLLBAR_RESERVE: f32 = 14.0;
+/// The reference window width (spec §11.3, 1600 × 960): at or above it the
+/// columns keep their stored widths.
+pub const REFERENCE_WINDOW_WIDTH: f32 = 1600.0;
+/// The floors File name and Folder shrink to before any other column gives
+/// way (§11.4 flexible columns). File name keeps its icon and about twelve
+/// characters; Folder keeps "~/…/" and a short last component.
+pub const FLEX_MINIMUMS: [(ColumnId, f32); 2] =
+    [(ColumnId::FileName, 140.0), (ColumnId::Folder, 96.0)];
+/// The floor every other column shrinks to once File name and Folder are
+/// at theirs, as a share of its stored width. Queue never shrinks: its
+/// checkbox and header need the whole 48 (frame `13:648`).
+const SECOND_STAGE_FLOOR: f32 = 0.55;
+/// Accessible name of the full-path line a keyboard-focused member row
+/// shows (spec line 1125); its value is the full path.
+pub const FULL_PATH_NAME: &str = "Full path";
 
 /// The table's keyboard focus target. Rows are not focusable themselves:
 /// only the visible ones exist each frame, so focus on a row widget would
@@ -87,10 +115,11 @@ pub fn checkbox_id(file: FileId) -> Id {
     Id::unique(("fd.findings.queue", file))
 }
 
-/// The ⋯ button of the focused row.
+/// The ⋯ button of `file`'s member row, stable per file: the invoker
+/// focus returns to when the row menu it opened closes.
 #[must_use]
-pub fn row_menu_button_id() -> Id {
-    Id::unique("fd.findings.row_menu_button")
+pub fn row_menu_button_id(file: FileId) -> Id {
+    Id::unique(("fd.findings.row_menu_button", file))
 }
 
 /// The column header text.
@@ -129,6 +158,142 @@ pub fn column_width(findings: &FindingsState, column: ColumnId) -> f32 {
         .get(&column)
         .copied()
         .unwrap_or_else(|| column.reference_width())
+}
+
+/// The widths `columns` are drawn at in a table body `room` units wide
+/// (columns plus [`SCROLLBAR_RESERVE`]), in a window `window_width` wide,
+/// in order.
+///
+/// Stage 0: the stored widths, whenever they fit or the window is at least
+/// the 1600-unit reference width, so §11.4's widths hold there exactly
+/// ("only below the reference width" do columns give way). Stage 1: File
+/// name and Folder shrink in proportion to their excess over
+/// [`FLEX_MINIMUMS`]. Stage 2: every column but Queue shrinks in proportion
+/// to its excess over [`SECOND_STAGE_FLOOR`] of its stored width. Past that
+/// the widths stay at their floors and the body scrolls sideways (at
+/// 1024 × 600 under 200% zoom no readable set of the always-shown columns
+/// fits 440 points). Rejected: shrinking every column from the start, which
+/// would move the evidence columns before the two §11.4 names as flexible.
+#[must_use]
+pub fn fitted_widths(
+    findings: &FindingsState,
+    columns: &[ColumnId],
+    room: f32,
+    window_width: f32,
+) -> Vec<f32> {
+    let stored: Vec<f32> = columns.iter().map(|c| column_width(findings, *c)).collect();
+    let target = (room - SCROLLBAR_RESERVE).max(0.0);
+    let total: f32 = stored.iter().sum();
+    if total <= target || window_width >= REFERENCE_WINDOW_WIDTH {
+        return stored;
+    }
+    let flex_floor = |c: ColumnId, w: f32| {
+        FLEX_MINIMUMS
+            .iter()
+            .find(|(f, _)| *f == c)
+            .map(|(_, min)| min.min(w))
+    };
+    let stage = |widths: &[f32], floor: &dyn Fn(usize) -> Option<f32>, excess: f32| {
+        let slack: f32 = (0..widths.len())
+            .filter_map(|i| floor(i).map(|f| widths[i] - f))
+            .sum();
+        let take = excess.min(slack);
+        let mut out = widths.to_vec();
+        if slack > 0.0 {
+            for (i, w) in out.iter_mut().enumerate() {
+                if let Some(f) = floor(i) {
+                    *w -= take * (*w - f) / slack;
+                }
+            }
+        }
+        out
+    };
+    let first = stage(
+        &stored,
+        &|i| flex_floor(columns[i], stored[i]),
+        total - target,
+    );
+    let total: f32 = first.iter().sum();
+    if total <= target {
+        return first;
+    }
+    let floor = |i: usize| {
+        let c = columns[i];
+        if c == ColumnId::Queue {
+            None
+        } else {
+            Some(
+                flex_floor(c, stored[i])
+                    .unwrap_or(stored[i] * SECOND_STAGE_FLOOR)
+                    .min(first[i]),
+            )
+        }
+    };
+    stage(&first, &floor, total - target)
+}
+
+/// The header row alone, across the top of `ui`'s remaining rect, for the
+/// table region's states that show no rows (frames `28:1399`, `28:2171`,
+/// `30:2370`): the same titles, fill and widths as the table's header, so
+/// the region reads as the table, empty. Drawn by the view after it frames
+/// the region; returns the strip's rect.
+pub fn header_strip(ui: &mut Ui, findings: &FindingsState) -> Rect {
+    let palette = theme::palette(mode_of(ui.ctx()));
+    let region = ui.available_rect_before_wrap().shrink(theme::BORDER_WIDTH);
+    let strip = Rect::from_min_size(region.min, egui::vec2(region.width(), HEADER_HEIGHT));
+    let columns = visible_columns(findings, ui.ctx().content_rect().width());
+    let widths = fitted_widths(
+        findings,
+        &columns,
+        region.width(),
+        ui.ctx().content_rect().width(),
+    );
+    ui.painter()
+        .rect_filled(strip, 0.0, palette.color(Token::Code));
+    let mut left = strip.left();
+    for (column, width) in columns.iter().zip(widths) {
+        let cell = Rect::from_min_size(
+            egui::pos2(left, strip.top()),
+            egui::vec2(width, HEADER_HEIGHT),
+        )
+        .intersect(strip);
+        left += width;
+        if cell.width() <= 0.0 {
+            break;
+        }
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cell));
+        header_title(&mut child, *column, palette);
+    }
+    strip
+}
+
+/// One header cell's title: muted group-emphasis text at the cell's left
+/// padding. Queue keeps no right padding, so its title shows whole in the
+/// 48-unit column (frame `13:648` sets "Queue" at 8 in a 48 cell, 40 wide)
+/// instead of eliding to "Qu…".
+fn header_title(ui: &mut Ui, column: ColumnId, palette: &Palette) {
+    let text = egui::RichText::new(column_title(column))
+        .text_style(CompactStyle::GroupEmphasis.text_style())
+        .color(palette.color(Token::Muted));
+    if column == ColumnId::Queue {
+        let max = ui.max_rect();
+        let rect = Rect::from_min_max(egui::pos2(max.left() + CELL_PAD, max.top()), max.max);
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.set_clip_rect(max.intersect(ui.clip_rect()));
+                ui.add(
+                    egui::Label::new(text)
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .selectable(false),
+                );
+            },
+        );
+    } else {
+        padded(ui, |ui| label(ui, text));
+    }
 }
 
 /// The current projection, rebuilt only when its key differs from the
@@ -227,6 +392,12 @@ pub fn show(
     let columns = visible_columns(findings, window_width);
     let outer = ui.available_rect_before_wrap();
     let page = rows_per_page(outer.height());
+    let widths = fitted_widths(
+        findings,
+        &columns,
+        outer.width() - 2.0 * theme::BORDER_WIDTH,
+        window_width,
+    );
 
     let mut actions = Vec::new();
     let table_response = ui.interact(outer, table_id(), Sense::click());
@@ -243,16 +414,7 @@ pub fn show(
     let mut table = egui_table::Table::new()
         .id_salt("fd.findings.table")
         .num_rows(projection.rows.len() as u64)
-        .columns(
-            columns
-                .iter()
-                .map(|c| {
-                    Column::new(column_width(findings, *c))
-                        .id(column_key(*c))
-                        .range(24.0..=f32::INFINITY)
-                })
-                .collect::<Vec<_>>(),
-        )
+        .columns(table_columns(&columns, &widths))
         .headers([HeaderRow::new(HEADER_HEIGHT)])
         .auto_size_mode(AutoSizeMode::Never);
     if reveal && let Some(pos) = focused_pos {
@@ -270,6 +432,7 @@ pub fn show(
         findings,
         queue,
         columns: &columns,
+        widths: &widths,
         palette,
         table_focused,
         actions: &mut actions,
@@ -289,8 +452,13 @@ pub fn show(
         .scope_builder(
             egui::UiBuilder::new().max_rect(outer.shrink(theme::BORDER_WIDTH)),
             |ui| {
+                // `egui_table` draws every column's right edge in this
+                // stroke; frame `13:648` has no vertical cell rules. The
+                // hovered and dragged strokes stay, so a resize handle
+                // still shows where it can be grabbed.
+                ui.visuals_mut().widgets.noninteractive.bg_stroke = Stroke::NONE;
                 let state_id = table.get_id(ui);
-                write_widths(ui, state_id, delegate.findings, &columns);
+                write_widths(ui, state_id, &columns, &widths);
                 table.show(ui, &mut delegate);
                 state_id
             },
@@ -299,12 +467,16 @@ pub fn show(
     let row_rects = std::mem::take(&mut delegate.row_rects);
     let scroll_area = delegate.scroll.area;
 
-    read_widths(ui, state_id, findings, &columns);
+    read_widths(ui, state_id, findings, &columns, &widths);
     // Not on a restoring pass: its scroll area still holds the old offset,
     // and recording that would overwrite the offset being restored. Later
     // passes record the restored one once the area has reached it.
     if !restoring && let Some(offset) = ScrollProbe::offset(ui.ctx(), scroll_area) {
         findings.scroll_offset = offset;
+    }
+
+    if table_focused {
+        focused_full_path(ui, findings, &results, &row_rects, outer, palette);
     }
 
     if menu_from_keyboard && let Some(row @ RowId::Member { .. }) = findings.focused {
@@ -322,6 +494,84 @@ pub fn show(
     } else {
         None
     }
+}
+
+/// Shows [`full_path`] for the focused row when it is a visible member row.
+fn focused_full_path(
+    ui: &Ui,
+    findings: &FindingsState,
+    results: &ScanResults,
+    row_rects: &HashMap<RowId, Rect>,
+    table: Rect,
+    palette: &Palette,
+) {
+    if let Some(row @ RowId::Member { file, .. }) = findings.focused
+        && let Some(rect) = row_rects.get(&row)
+        && let Some(member) = results.group_of(file).and_then(|g| g.member(file))
+    {
+        full_path(ui, *rect, table, &member.display_path, palette);
+    }
+}
+
+/// The focused member row's full path, shown while the table has keyboard
+/// focus (spec line 1125: "keyboard-reachable details …; hover alone is
+/// insufficient"). Rows are not widgets (see [`table_id`]), so a focus
+/// tooltip is drawn here, under the row (above it near the table's foot),
+/// wrapped to the table's width so the whole path shows at any zoom. Copy
+/// path stays Ctrl+Shift+C and the row menu. Rejected: widening the Folder
+/// cell inline, which would push the Decision column off a narrow table.
+fn full_path(ui: &Ui, row: Rect, table: Rect, path: &str, palette: &Palette) {
+    let max_width = (table.width() - 4.0 * CELL_PAD).max(80.0);
+    let below = row.bottom() + 2.0 + 3.0 * ROW_HEIGHT <= table.bottom();
+    let anchor = egui::pos2(
+        row.left() + CELL_PAD,
+        if below {
+            row.bottom() + 2.0
+        } else {
+            row.top() - 2.0
+        },
+    );
+    let pivot = if below {
+        Align2::LEFT_TOP
+    } else {
+        Align2::LEFT_BOTTOM
+    };
+    egui::Area::new(Id::unique("fd.findings.full_path"))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .constrain(true)
+        .pivot(pivot)
+        .fixed_pos(anchor)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(palette.color(Token::Surface))
+                .stroke(Stroke::new(theme::BORDER_WIDTH, palette.color(Token::Line)))
+                .corner_radius(theme::CORNER_RADIUS)
+                .shadow(theme::shadow(mode_of(ui.ctx())))
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_max_width(max_width);
+                    let response = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(path)
+                                .text_style(CompactStyle::PathDetail.text_style())
+                                .color(palette.color(Token::Ink)),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Wrap)
+                        .selectable(false),
+                    );
+                    // A tooltip node named FULL_PATH_NAME whose value is the
+                    // path. Not a Label: the Findings tests read every Label
+                    // under the header as a table cell, and this line sits
+                    // over the next row.
+                    response.widget_info(|| {
+                        let mut info =
+                            egui::WidgetInfo::labeled(egui::Role::Tooltip, true, FULL_PATH_NAME);
+                        info.current_text_value = Some(path.to_owned());
+                        info
+                    });
+                });
+        });
 }
 
 /// Takes the arrow keys for row focus instead of egui's focus movement and
@@ -436,19 +686,32 @@ impl ScrollProbe {
     }
 }
 
+/// `egui_table`'s columns at their fitted widths, keyed per column so a
+/// hidden column never shifts another's stored width.
+fn table_columns(columns: &[ColumnId], widths: &[f32]) -> Vec<Column> {
+    columns
+        .iter()
+        .zip(widths)
+        .map(|(c, width)| {
+            Column::new(*width)
+                .id(column_key(*c))
+                .range(24.0..=f32::INFINITY)
+        })
+        .collect()
+}
+
 fn column_key(column: ColumnId) -> Id {
     Id::unique(("fd.findings.column", column))
 }
 
-/// Puts `FindingsState::column_widths` into `egui_table`'s stored state, so
-/// the table neither auto-sizes nor keeps a width of its own.
-fn write_widths(ui: &Ui, state_id: Id, findings: &FindingsState, columns: &[ColumnId]) {
+/// Puts the fitted widths of `FindingsState::column_widths` into
+/// `egui_table`'s stored state, so the table neither auto-sizes nor keeps a
+/// width of its own.
+fn write_widths(ui: &Ui, state_id: Id, columns: &[ColumnId], widths: &[f32]) {
     let mut stored = egui_table::TableState::load(ui.ctx(), state_id).unwrap_or_default();
-    for (i, c) in columns.iter().enumerate() {
+    for (i, (c, width)) in columns.iter().zip(widths).enumerate() {
         let column = Column::new(0.0).id(column_key(*c));
-        stored
-            .col_widths
-            .insert(column.id_for(i), column_width(findings, *c));
+        stored.col_widths.insert(column.id_for(i), *width);
     }
     stored.parent_width = Some(ui.available_width());
     stored.store(ui.ctx(), state_id);
@@ -457,17 +720,25 @@ fn write_widths(ui: &Ui, state_id: Id, findings: &FindingsState, columns: &[Colu
 /// Takes back a drag-resize: the stored width of a column whose resize
 /// handle is being dragged. Only a drag counts: `egui_table` also rewrites
 /// widths on its own sizing passes (egui's first-frame and discard passes),
-/// and taking those would shrink every column to its content.
-fn read_widths(ui: &Ui, state_id: Id, findings: &mut FindingsState, columns: &[ColumnId]) {
+/// and taking those would shrink every column to its content. The drag is
+/// measured against the fitted width it started from, so a drag on a
+/// shrunk column stores the width the user sees.
+fn read_widths(
+    ui: &Ui,
+    state_id: Id,
+    findings: &mut FindingsState,
+    columns: &[ColumnId],
+    fitted: &[f32],
+) {
     let Some(after) = egui_table::TableState::load(ui.ctx(), state_id) else {
         return;
     };
-    for (i, c) in columns.iter().enumerate() {
+    for (i, (c, drawn)) in columns.iter().zip(fitted).enumerate() {
         let column = Column::new(0.0).id(column_key(*c));
         let handle = state_id.with(column.id_for(i)).with("resize");
         if ui.ctx().is_being_dragged(handle)
             && let Some(width) = after.col_widths.get(&column.id_for(i))
-            && (width - column_width(findings, *c)).abs() > 0.25
+            && (width - drawn).abs() > 0.25
         {
             findings.column_widths.insert(*c, *width);
         }
@@ -649,6 +920,8 @@ struct Delegate<'a> {
     findings: &'a FindingsState,
     queue: &'a QueueState,
     columns: &'a [ColumnId],
+    /// The fitted widths `columns` are drawn at.
+    widths: &'a [f32],
     palette: &'static Palette,
     table_focused: bool,
     actions: &'a mut Vec<Action>,
@@ -704,12 +977,7 @@ impl TableDelegate for Delegate<'_> {
         let Some(column) = self.columns.get(cell.group_index) else {
             return;
         };
-        let text = self.text(
-            column_title(*column),
-            CompactStyle::GroupEmphasis,
-            Token::Muted,
-        );
-        padded(ui, |ui| label(ui, text));
+        header_title(ui, *column, self.palette);
     }
 
     fn row_ui(&mut self, ui: &mut Ui, row_nr: u64) {
@@ -746,7 +1014,7 @@ impl TableDelegate for Delegate<'_> {
         // clicks (egui hit-tests the topmost widget). The Queue cell is left
         // out so a checkbox click never also focuses or compares the row.
         let queue_width = if self.columns.first() == Some(&ColumnId::Queue) {
-            column_width(self.findings, ColumnId::Queue)
+            self.widths.first().copied().unwrap_or(0.0)
         } else {
             0.0
         };
@@ -865,23 +1133,41 @@ impl Delegate<'_> {
             ColumnId::Match => plain(self, projections::match_label(group, &view), Token::Ink),
             ColumnId::Unique => plain(self, projections::unique_label(&view), Token::Muted),
             ColumnId::FileName => {
+                // The reference row carries the anchor and a bold name
+                // (frame `13:648`); `member_view` names the current
+                // reference, which Make this the reference can move.
+                // A protected non-reference row carries the lock in place
+                // of the file icon, in the ink token (frame `13:648`'s
+                // Requirements_v2 row); a protected reference keeps its
+                // anchor, as Project_Plan does there.
+                let reference = view.counterpart.is_none();
+                let (icon, token) = if reference {
+                    (Icon::Reference, Token::Ink)
+                } else if is_protected(member, self.queue) {
+                    (Icon::Protected, Token::Ink)
+                } else {
+                    (Icon::Document, Token::Muted)
+                };
                 let icon = plain(
                     self,
-                    glyphs::text(ui.ctx(), Icon::Document).unwrap_or_default(),
-                    Token::Muted,
+                    glyphs::text(ui.ctx(), icon).unwrap_or_default(),
+                    token,
                 );
-                let name = plain(self, member.name.clone(), Token::Ink);
+                let name = if reference {
+                    self.text(member.name.clone(), CompactStyle::GroupEmphasis, Token::Ink)
+                } else {
+                    plain(self, member.name.clone(), Token::Ink)
+                };
                 padded(ui, |ui| {
                     label(ui, icon);
                     label(ui, name);
                 });
                 return;
             }
-            ColumnId::Folder => plain(
-                self,
-                projections::folder_label(&member.folder),
-                Token::Muted,
-            ),
+            ColumnId::Folder => {
+                self.folder_cell(ui, &projections::folder_label(&member.folder));
+                return;
+            }
             ColumnId::Modified => {
                 plain(self, projections::date_label(member.modified), Token::Muted)
             }
@@ -891,12 +1177,12 @@ impl Delegate<'_> {
                 Token::Muted,
             ),
             ColumnId::Protected => {
-                let protected = member.folder_protected || self.queue.is_protected(member.file);
-                plain(
-                    self,
-                    if protected { "Protected" } else { "—" }.to_owned(),
-                    Token::Muted,
-                )
+                // Frame `13:648` sets "Protected" in the green token.
+                if is_protected(member, self.queue) {
+                    plain(self, "Protected".to_owned(), Token::Green)
+                } else {
+                    plain(self, "—".to_owned(), Token::Muted)
+                }
             }
             ColumnId::Decision => {
                 self.decision_cell(ui, row, member, &view);
@@ -920,42 +1206,99 @@ impl Delegate<'_> {
                 (CompactStyle::ControlLabel, Token::Amber)
             }
             "Kept" => (CompactStyle::ControlLabel, Token::Green),
+            "Protected" => (CompactStyle::Table, Token::Green),
             "Reference" => (CompactStyle::Table, Token::Muted),
             _ => (CompactStyle::Table, Token::Ink),
         };
         let text = self.text(decision, style, token);
         let focused = self.findings.focused == Some(row.id);
-        let more = self.text(
-            glyphs::text(ui.ctx(), Icon::RowMenu).unwrap_or_default(),
-            CompactStyle::Table,
-            Token::Muted,
-        );
+        let more = glyphs::text(ui.ctx(), Icon::RowMenu).unwrap_or_default();
+        let button_id = row_menu_button_id(member.file);
         let mut menu = None;
+        let palette = self.palette;
         padded(ui, |ui| {
-            label(ui, text);
-            if focused {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = ui.add(egui::Button::new(more).frame(false));
-                    let response = ui.interact(button.rect, row_menu_button_id(), Sense::click());
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Button, true, "Row menu")
-                    });
-                    if response.clicked() || button.clicked() {
-                        menu = Some(egui::pos2(
-                            response.rect.right() - ROW_MENU_WIDTH,
-                            response.rect.bottom(),
-                        ));
-                    }
-                });
+            // The ⋯ is reserved first, at the cell's right edge, so a long
+            // decision label elides before it instead of covering it.
+            let cell = ui.max_rect();
+            let button = Rect::from_min_max(
+                egui::pos2(cell.right() - ROW_MENU_BUTTON_WIDTH, cell.top()),
+                cell.max,
+            );
+            let text_rect =
+                Rect::from_min_max(cell.min, egui::pos2(button.left() - 4.0, cell.bottom()));
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(text_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| label(ui, text),
+            );
+            // Every member row shows ⋯ (frame `13:648`). Only the focused
+            // row's is a Tab stop: one per visible row would put dozens of
+            // stops between the toolbar and whatever follows, and the
+            // keyboard route to a row menu is the Menu key or Shift+F10.
+            let sense = if focused {
+                Sense::click()
+            } else {
+                Sense::CLICK
+            };
+            let response = ui.interact(button, button_id, sense);
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Row menu"));
+            let ink = palette.color(if response.hovered() || response.has_focus() {
+                Token::Ink
+            } else {
+                Token::Muted
+            });
+            ui.painter().text(
+                button.center(),
+                Align2::CENTER_CENTER,
+                &more,
+                CompactStyle::Table.font_id(),
+                ink,
+            );
+            if response.clicked() {
+                menu = Some(egui::pos2(button.right() - ROW_MENU_WIDTH, button.bottom()));
             }
         });
         if let Some(at) = menu {
             self.actions.push(Action::RowMenu {
                 row: row.id,
                 at,
-                invoker: row_menu_button_id(),
+                invoker: button_id,
             });
         }
+    }
+
+    /// The Folder cell: the folder shortened from the front to fit the
+    /// cell, keeping "~/" or "/" and as many trailing components as fit,
+    /// with "…/" for the rest (frame `29:2214`: "~/…/Projects/"). Only the
+    /// drawn text shortens; the accessible value, Copy path and the search
+    /// keep the stored folder (§11.4 "shorten only the visual
+    /// representation").
+    fn folder_cell(&self, ui: &mut Ui, folder: &str) {
+        let palette = self.palette;
+        padded(ui, |ui| {
+            let room = ui.max_rect().width();
+            let font = CompactStyle::Table.font_id();
+            let shown = shorten_folder(folder, |s| {
+                ui.painter()
+                    .layout_no_wrap(s.to_owned(), font.clone(), palette.color(Token::Muted))
+                    .size()
+                    .x
+                    <= room
+            });
+            let response = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(shown)
+                        .text_style(CompactStyle::Table.text_style())
+                        .color(palette.color(Token::Muted)),
+                )
+                .truncate()
+                .selectable(false),
+            );
+            let full = folder.to_owned();
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &full));
+        });
     }
 
     fn checkbox(
@@ -966,9 +1309,20 @@ impl Delegate<'_> {
         view: &projections::MemberView,
     ) {
         let state = projections::queue_box(member, view, self.queue);
-        if state == QueueBox::None {
+        // A protected member shows no checkbox at all (frame `13:648`): it
+        // can never be queued, and its lock and Protected value say why. A
+        // counterpart-queued row keeps its disabled box, because it becomes
+        // queueable again once its counterpart is unqueued.
+        if state == QueueBox::None
+            || (state == QueueBox::Disabled && is_protected(member, self.queue))
+        {
             return;
         }
+        // A member that needs review first keeps a working checkbox, outlined
+        // in the amber token on the amber soft fill (frame `13:648`), so the
+        // caution shows before the click that would ask for that review.
+        let review_first = state == QueueBox::Unchecked
+            && projections::decision_label(member, view, self.queue) == "Review first";
         let rect = Rect::from_center_size(ui.max_rect().center(), egui::vec2(16.0, 16.0));
         let enabled = state != QueueBox::Disabled;
         let sense = if enabled {
@@ -986,6 +1340,7 @@ impl Delegate<'_> {
         let (fill, stroke) = match state {
             QueueBox::Checked => (palette.color(Token::Primary), palette.color(Token::Primary)),
             QueueBox::Disabled => (palette.color(Token::Canvas), palette.color(Token::Line)),
+            _ if review_first => (palette.color(Token::AmberSoft), palette.color(Token::Amber)),
             _ => (palette.color(Token::Surface), palette.color(Token::Quiet)),
         };
         if checked {
@@ -1026,4 +1381,39 @@ impl Delegate<'_> {
             });
         }
     }
+}
+
+/// Whether `member` is protected, by its folder or by the user: the same
+/// rule `projections::queue_box` and `projections::decision_label` apply.
+fn is_protected(member: &fuzzy_dedupe_domain::Member, queue: &QueueState) -> bool {
+    member.folder_protected || queue.is_protected(member.file)
+}
+
+/// The ⋯ hit area at a Decision cell's right edge.
+const ROW_MENU_BUTTON_WIDTH: f32 = 20.0;
+
+/// `folder` as drawn in a Folder cell: whole when `fits` accepts it, else
+/// its root ("~/" or "/") then "…/" then the longest run of trailing
+/// components `fits` accepts, else "…/" and the last component alone (the
+/// label then elides that). `folder` ends in "/" (`folder_label`).
+#[must_use]
+pub fn shorten_folder(folder: &str, fits: impl Fn(&str) -> bool) -> String {
+    if fits(folder) {
+        return folder.to_owned();
+    }
+    let (root, rest) = if let Some(rest) = folder.strip_prefix("~/") {
+        ("~/", rest)
+    } else if let Some(rest) = folder.strip_prefix('/') {
+        ("/", rest)
+    } else {
+        ("", folder)
+    };
+    let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
+    for skip in 1..parts.len() {
+        let candidate = format!("{root}…/{}/", parts[skip..].join("/"));
+        if fits(&candidate) {
+            return candidate;
+        }
+    }
+    format!("{root}…/{}/", parts.last().copied().unwrap_or_default())
 }

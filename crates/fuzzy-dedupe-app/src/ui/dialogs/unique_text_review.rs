@@ -38,6 +38,7 @@ use fuzzy_dedupe_engine::service::{EngineRequest, ReviewCommand};
 
 use crate::presentation::commands::UiIntent;
 use crate::presentation::state::{CompareState, DialogSubject, UniqueTextSubject};
+use crate::ui::dialogs::matching_rules::alert_check_box;
 use crate::ui::dialogs::queue_identical::{current_reference, footer_row, icon, text};
 use crate::ui::dialogs::{DialogCx, DialogResponse};
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
@@ -243,7 +244,7 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
         Token::Muted,
     ));
 
-    draft.checkbox = Some(acknowledgment(ui, palette, draft));
+    draft.checkbox = Some(acknowledgment(ui, draft));
     if draft.prompt && !draft.acknowledged {
         notice(ui, palette, PROMPT);
     } else if let Some(blocked) = draft.blocked {
@@ -505,25 +506,26 @@ fn line_row(ui: &mut egui::Ui, palette: &Palette, number: usize, source: &str) {
 
 /// The acknowledgment checkbox; returns its ID for the focus move. In the
 /// prompt state its box is drawn in the red token, as in `44:4079`.
-fn acknowledgment(ui: &mut egui::Ui, palette: &Palette, draft: &mut Draft) -> Id {
+///
+/// The compact checkbox the other popups use, not `egui::Checkbox`: egui's
+/// box is the style's `icon_width` (14 units here), against the 16 of spec
+/// §11.7 (T40 item P8).
+fn acknowledgment(ui: &mut egui::Ui, draft: &mut Draft) -> Id {
     let prompt = draft.prompt && !draft.acknowledged;
-    let response = ui
-        .scope(|ui| {
-            if prompt {
-                let red = Stroke::new(theme::BORDER_WIDTH, palette.color(Token::Red));
-                let widgets = &mut ui.visuals_mut().widgets;
-                widgets.inactive.bg_stroke = red;
-                widgets.hovered.bg_stroke = red;
-            }
-            ui.add(egui::Checkbox::new(
-                &mut draft.acknowledged,
-                text(ACKNOWLEDGMENT, CompactStyle::Table, palette, Token::Ink),
-            ))
-        })
-        .inner;
-    if response.changed() && draft.acknowledged {
-        draft.prompt = false;
-        draft.blocked = None;
+    let response = alert_check_box(
+        ui,
+        draft.acknowledged,
+        Some(ACKNOWLEDGMENT),
+        ACKNOWLEDGMENT,
+        true,
+        prompt,
+    );
+    if response.clicked() {
+        draft.acknowledged = !draft.acknowledged;
+        if draft.acknowledged {
+            draft.prompt = false;
+            draft.blocked = None;
+        }
     }
     response.id
 }

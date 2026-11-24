@@ -53,7 +53,11 @@
 //! - Below the reference width, what does not fit is dropped: the
 //!   toolbar's group label and pair, the evidence row's reminder, and the
 //!   identity rows' size and date, as frame `29:3648` does (the plan
-//!   leaves the mechanics to the executor).
+//!   leaves the mechanics to the executor). Toolbar actions that still do
+//!   not fit move into the More actions menu (`ToolbarFit` states the
+//!   order), and the change row wraps between its groups (`change_row`).
+//! - The identity rows take keyboard focus; focus shows the full path and
+//!   Ctrl+Shift+C copies it (`identities`).
 //! - While the evidence is stale, Keep both and Queue B are disabled until
 //!   Compare again re-opens the pair on the current snapshots: a decision
 //!   must bind to evidence the published view still holds (C-05 I-7).
@@ -99,6 +103,9 @@ pub const WRAP_NAME: &str = "Wrap";
 pub const LINKED_SCROLL_NAME: &str = "Linked scroll";
 pub const ORIGINAL_NAME: &str = "Original";
 pub const NORMALIZED_NAME: &str = "Normalized";
+/// The toolbar's overflow button (spec §11.3 collapse step 3), shown only
+/// while an action has moved into its menu.
+pub const MORE_ACTIONS_NAME: &str = "More actions";
 pub const READ_ONLY_NOTE: &str = "Read-only · similarity is not deletion safety";
 pub const STALE_BADGE: &str = "Stale evidence";
 pub const COMPARE_AGAIN_NAME: &str = "Compare again";
@@ -421,55 +428,342 @@ pub fn toolbar(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue)
         back_to_findings(intents);
     }
 
-    // The trailing items and the shell's shared ones are measured first,
-    // so what does not fit is dropped from the leading side (frame
-    // `29:3648` drops the group label and the pair).
-    let spacing = ui.spacing().item_spacing.x;
-    let review = format!("Review cleanup ({})", cx.queue.queued_count());
-    let shared = CONTROL_HEIGHT + button_width(ui, &review) + 2.0 * spacing;
-    let trailing =
-        button_width(ui, KEEP_BOTH_NAME) + button_width(ui, QUEUE_B_NAME) + 2.0 * spacing;
-    if let Some(view) = &view {
-        leading(ui, cx, intents, view, shared + trailing, palette);
-    }
-    let room = ui.available_width() - shared - trailing;
-    if room > 0.0 {
-        ui.add_space(room);
-    }
-
     let evidence = shown(cx.compare).map(|(request, _)| request);
     let stale = shown_request(cx.compare)
         .and_then(|request| projections::stale_note(&request, cx.queue))
         .is_some();
     let ready = view.is_some() && evidence.is_some() && !stale;
-    let keep = action(ui, KEEP_BOTH_NAME, keep_both_id(), ready, palette);
-    let keep = keep.on_disabled_hover_text(disabled_reason(view.is_some(), stale));
-    let queue = action(ui, QUEUE_B_NAME, queue_b_id(), ready, palette);
-    let queue = queue.on_disabled_hover_text(disabled_reason(view.is_some(), stale));
-    let (Some(pair), Some(reviewed)) = (cx.compare.pair, evidence) else {
+    let fit = fit_toolbar(ui, view.as_ref());
+
+    if let Some(view) = &view {
+        leading(ui, cx, intents, view, fit, palette);
+    }
+    // The trailing items sit at the budget's right edge, as frame
+    // `13:1304` places Keep both and Queue B beside Review cleanup. The
+    // budget is the shell's (`shell::toolbar_row`), which already excludes
+    // the shared items, so nothing else is subtracted here.
+    let room = ui.available_width() - fit.trailing_width(ui);
+    if room > 0.0 {
+        ui.add_space(room);
+    }
+
+    // Toolbar buttons act only while no overlay is open; menu items act
+    // while their own menu is the overlay, so each source checks its own.
+    let mut decision = None;
+    if fit.keep_both() {
+        let keep = action(ui, KEEP_BOTH_NAME, keep_both_id(), ready, palette)
+            .on_disabled_hover_text(disabled_reason(view.is_some(), stale));
+        if cx.input_enabled && keep.clicked() {
+            decision = Some((Decision::KeepBoth, keep_both_id()));
+        }
+    }
+    if fit.queue_b() {
+        let queue = action(ui, QUEUE_B_NAME, queue_b_id(), ready, palette)
+            .on_disabled_hover_text(disabled_reason(view.is_some(), stale));
+        if cx.input_enabled && queue.clicked() {
+            decision = Some((Decision::QueueB, queue_b_id()));
+        }
+    }
+    if fit.overflows() {
+        let more = more_button(ui, palette);
+        if cx.input_enabled && more.clicked() {
+            intents.push(UiIntent::ToggleMenu {
+                kind: MenuKind::Actions,
+                invoker: Some(more_id()),
+            });
+        }
+    }
+    if cx.menu == Some(MenuKind::Actions) {
+        if let Some(chosen) = overflow_menu(ui, cx, intents, fit, ready, palette) {
+            decision = Some((chosen, more_id()));
+        }
+    } else {
+        ui.ctx()
+            .data_mut(|d| d.remove::<bool>(Id::unique("fd.compare.more_drawn")));
+    }
+
+    let (Some((decision, invoker)), Some(pair), Some(reviewed), true) =
+        (decision, cx.compare.pair, evidence, ready)
+    else {
         return;
     };
-    if cx.input_enabled && ready && keep.clicked() {
-        intents.push(UiIntent::Review {
-            command: ReviewCommand::KeepBoth {
-                file: pair.target,
-                counterpart: pair.counterpart,
-                reviewed,
-            },
-            invoker: Some(keep_both_id()),
-        });
+    let command = match decision {
+        Decision::KeepBoth => ReviewCommand::KeepBoth {
+            file: pair.target,
+            counterpart: pair.counterpart,
+            reviewed,
+        },
+        Decision::QueueB => ReviewCommand::RequestQueue {
+            file: pair.target,
+            counterpart: pair.counterpart,
+            origin: QueueOrigin::Compare,
+            reviewed: Some(reviewed),
+        },
+    };
+    intents.push(UiIntent::Review {
+        command,
+        invoker: Some(invoker),
+    });
+}
+
+/// The two pair decisions the toolbar or its overflow menu sends.
+#[derive(Clone, Copy)]
+enum Decision {
+    KeepBoth,
+    QueueB,
+}
+
+/// Which of the toolbar's optional items are drawn in its budget (spec
+/// §11.3 collapse step 3). What is not drawn is either dropped (the group
+/// label and pair, which are text and repeat the identity header) or moved
+/// into the "More actions" menu ([`MORE_ACTIONS_NAME`]).
+///
+/// Overflow priority, decided by the executor (T40; the spec and frames
+/// give none): the labels go first, as frame `29:3648` drops them; then
+/// actions move into the menu from the trailing end, Queue B for cleanup…
+/// before Keep both, and the candidate stepper last. ‹ Findings never
+/// moves. Moving from the trailing end keeps the visible actions a prefix
+/// of the full row, so the menu always holds "the rest" in reading order.
+/// Rejected: moving the stepper first, as the narrowest item that would
+/// free little room while it is the only pointer route between candidates
+/// besides Alt+Left/Right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ToolbarFit {
+    /// Everything fits.
+    All,
+    /// The group label and pair are dropped.
+    NoLabels,
+    /// Queue B for cleanup… has moved into the menu too.
+    QueueBMoved,
+    /// Keep both as well.
+    DecisionsMoved,
+    /// The candidate stepper as well: only ‹ Findings and More actions.
+    StepperMoved,
+}
+
+impl ToolbarFit {
+    fn labels(self) -> bool {
+        self == Self::All
     }
-    if cx.input_enabled && ready && queue.clicked() {
-        intents.push(UiIntent::Review {
-            command: ReviewCommand::RequestQueue {
-                file: pair.target,
-                counterpart: pair.counterpart,
-                origin: QueueOrigin::Compare,
-                reviewed: Some(reviewed),
-            },
-            invoker: Some(queue_b_id()),
-        });
+
+    fn stepper(self) -> bool {
+        self < Self::StepperMoved
     }
+
+    fn keep_both(self) -> bool {
+        self < Self::DecisionsMoved
+    }
+
+    fn queue_b(self) -> bool {
+        self < Self::QueueBMoved
+    }
+
+    fn overflows(self) -> bool {
+        self >= Self::QueueBMoved
+    }
+
+    /// The width of the items drawn after the stretch: the visible
+    /// decisions and the More actions button.
+    fn trailing_width(self, ui: &Ui) -> f32 {
+        let spacing = ui.spacing().item_spacing.x;
+        let mut widths = Vec::new();
+        if self.keep_both() {
+            widths.push(button_width(ui, KEEP_BOTH_NAME));
+        }
+        if self.queue_b() {
+            widths.push(button_width(ui, QUEUE_B_NAME));
+        }
+        if self.overflows() {
+            widths.push(CONTROL_HEIGHT);
+        }
+        row_width(&widths, spacing)
+    }
+}
+
+/// `widths` laid side by side with `spacing` between neighbours.
+fn row_width(widths: &[f32], spacing: f32) -> f32 {
+    widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| if index == 0 { *width } else { width + spacing })
+        .sum()
+}
+
+/// Chooses the [`ToolbarFit`] for the width left after ‹ Findings, trying
+/// each step of the overflow priority in turn. Widths are measured at the
+/// fonts the items draw with; the frameless stepper arrows are measured
+/// with button padding they do not draw, which only errs toward room.
+fn fit_toolbar(ui: &Ui, view: Option<&CompareView>) -> ToolbarFit {
+    let budget = ui.available_width();
+    [
+        ToolbarFit::All,
+        ToolbarFit::NoLabels,
+        ToolbarFit::QueueBMoved,
+        ToolbarFit::DecisionsMoved,
+    ]
+    .into_iter()
+    .find(|fit| toolbar_need(ui, view, *fit) <= budget)
+    .unwrap_or(ToolbarFit::StepperMoved)
+}
+
+/// The narrowest budget in which the toolbar shows every item, ‹ Findings
+/// included, with nothing dropped or moved into More actions
+/// ([`ToolbarFit::All`]): the minimum `shell::toolbar_row` keeps beside the
+/// full Review cleanup label before it shortens that label (see its
+/// contract). Frame `29:3648` is the case where it does not fit.
+#[must_use]
+pub fn toolbar_min_width(ui: &Ui, cx: &WorkspaceCx<'_>) -> f32 {
+    let view = current_view(cx);
+    button_width(ui, BACK_NAME)
+        + ui.spacing().item_spacing.x
+        + toolbar_need(ui, view.as_ref(), ToolbarFit::All)
+}
+
+/// The width the items after ‹ Findings need at `fit`, measured at the
+/// fonts they draw with.
+fn toolbar_need(ui: &Ui, view: Option<&CompareView>, fit: ToolbarFit) -> f32 {
+    let spacing = ui.spacing().item_spacing.x;
+    let (labels, stepper) = view.map_or((0.0, 0.0), |view| {
+        let stepper_label =
+            projections::candidate_label(view.candidate_index, view.candidates.len());
+        (
+            text_width(ui, &view.group_label, CompactStyle::GroupEmphasis)
+                + spacing
+                + text_width(ui, &view.pair_label, CompactStyle::ControlLabel),
+            row_width(
+                &[
+                    button_width(ui, "‹"),
+                    text_width(ui, &stepper_label, CompactStyle::Supporting),
+                    button_width(ui, "›"),
+                ],
+                spacing,
+            ),
+        )
+    });
+    let has_view = view.is_some();
+    let mut widths = Vec::new();
+    if fit.labels() && has_view {
+        widths.push(labels);
+    }
+    if fit.stepper() && has_view {
+        widths.push(stepper);
+    }
+    let trailing = fit.trailing_width(ui);
+    if trailing > 0.0 {
+        widths.push(trailing);
+    }
+    row_width(&widths, spacing)
+}
+
+fn more_id() -> Id {
+    Id::unique("fd.compare.more")
+}
+
+/// The square "⋯" button that opens the overflow menu.
+fn more_button(ui: &mut Ui, palette: &Palette) -> Response {
+    let button = egui::Button::new(styled(
+        glyph_text(ui.ctx(), Icon::RowMenu),
+        CompactStyle::ControlLabel,
+        palette.color(Token::Ink),
+    ))
+    .min_size(Vec2::splat(CONTROL_HEIGHT));
+    control(ui, button, more_id(), MORE_ACTIONS_NAME, true).on_hover_text("More actions")
+}
+
+/// Draws the More actions menu below its button, holding exactly the
+/// actions `fit` left out, in toolbar order. Returns the decision chosen
+/// this frame, if any; the stepper items act here.
+///
+/// The menu is the overlay slot's `MenuKind::Actions`, the §11.3 "Actions
+/// menu" secondary actions move into. Findings draws the same kind for its
+/// own Actions ▾; the two never meet, because each view draws only while
+/// it is the workspace and the slot is closed by the host's Esc, an outside
+/// press, or an item. Rejected: a Compare-only `MenuKind` variant, which
+/// every exhaustive match on the kind (Findings' menu drawer among them)
+/// would have to learn.
+fn overflow_menu(
+    ui: &Ui,
+    cx: &WorkspaceCx<'_>,
+    intents: &mut IntentQueue,
+    fit: ToolbarFit,
+    ready: bool,
+    palette: &Palette,
+) -> Option<Decision> {
+    let ctx = ui.ctx().clone();
+    // A resize that made everything fit took the button away; a menu with
+    // nothing in it must not stay open over the toolbar.
+    if !fit.overflows() {
+        intents.push(UiIntent::CloseOverlay);
+        return None;
+    }
+    let drawn_key = Id::unique("fd.compare.more_drawn");
+    let mut first = ctx.data(|d| d.get_temp::<bool>(drawn_key)).is_none();
+    ctx.data_mut(|d| d.insert_temp(drawn_key, true));
+    let anchor = ctx
+        .read_response(more_id())
+        .map_or(Rect::NOTHING, |r| r.rect);
+    let frame = egui::Frame::new()
+        .fill(palette.color(Token::Surface))
+        .stroke(Stroke::new(theme::BORDER_WIDTH, palette.color(Token::Line)))
+        .corner_radius(theme::CORNER_RADIUS)
+        .shadow(theme::shadow(mode_of(&ctx)))
+        .inner_margin(egui::Margin::symmetric(1, 4));
+    let index = cx.compare.candidate_index;
+    let count = cx.compare.candidates.len();
+    let mut chosen = None;
+    let area = egui::Area::new(Id::unique("fd.compare.more_menu"))
+        .order(egui::Order::Foreground)
+        .constrain(true)
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(anchor.right_bottom() + Vec2::new(0.0, 2.0))
+        .show(&ctx, |ui| {
+            frame.show(ui, |ui| {
+                ui.set_width(MENU_WIDTH - 2.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let mut focus_first = |response: &Response| {
+                    if std::mem::take(&mut first) {
+                        response.request_focus();
+                    }
+                };
+                if !fit.stepper() {
+                    let previous = menu_item(ui, PREVIOUS_CANDIDATE_NAME, index > 0, palette);
+                    focus_first(&previous);
+                    if previous.clicked() && index > 0 {
+                        intents.push(UiIntent::CloseOverlay);
+                        step_candidate(cx, intents, index - 1);
+                    }
+                    let next = menu_item(ui, NEXT_CANDIDATE_NAME, index + 1 < count, palette);
+                    if next.clicked() && index + 1 < count {
+                        intents.push(UiIntent::CloseOverlay);
+                        step_candidate(cx, intents, index + 1);
+                    }
+                }
+                for (shown, name, decision) in [
+                    (fit.keep_both(), KEEP_BOTH_NAME, Decision::KeepBoth),
+                    (fit.queue_b(), QUEUE_B_NAME, Decision::QueueB),
+                ] {
+                    if shown {
+                        continue;
+                    }
+                    let item = menu_item(ui, name, ready, palette);
+                    focus_first(&item);
+                    if item.clicked() && ready {
+                        intents.push(UiIntent::CloseOverlay);
+                        chosen = Some(decision);
+                    }
+                }
+            });
+        });
+    let pressed_outside = ctx.input(|i| {
+        i.pointer.any_pressed()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|pos| !area.response.rect.contains(pos) && !anchor.contains(pos))
+    });
+    if pressed_outside {
+        intents.push(UiIntent::CloseOverlay);
+    }
+    chosen
 }
 
 const fn disabled_reason(has_pair: bool, stale: bool) -> &'static str {
@@ -482,25 +776,17 @@ const fn disabled_reason(has_pair: bool, stale: bool) -> &'static str {
     }
 }
 
-/// The group label, the pair and the candidate stepper; `reserved` is the
-/// width the trailing and shared items need.
+/// The group label and pair, and the candidate stepper, each when `fit`
+/// keeps it in the toolbar.
 fn leading(
     ui: &mut Ui,
     cx: &WorkspaceCx<'_>,
     intents: &mut IntentQueue,
     view: &CompareView,
-    reserved: f32,
+    fit: ToolbarFit,
     palette: &Palette,
 ) {
-    let spacing = ui.spacing().item_spacing.x;
-    let stepper_label = projections::candidate_label(view.candidate_index, view.candidates.len());
-    let stepper = 2.0 * button_width(ui, "›")
-        + text_width(ui, &stepper_label, CompactStyle::Supporting)
-        + 2.0 * spacing;
-    let labels = text_width(ui, &view.group_label, CompactStyle::GroupEmphasis)
-        + text_width(ui, &view.pair_label, CompactStyle::ControlLabel)
-        + 2.0 * spacing;
-    if ui.available_width() - reserved - stepper >= labels {
+    if fit.labels() {
         label(
             ui,
             &view.group_label,
@@ -514,13 +800,16 @@ fn leading(
             palette.color(Token::Ink),
         );
     }
+    if !fit.stepper() {
+        return;
+    }
     let index = view.candidate_index;
     let count = view.candidates.len();
     let previous = plain(ui, "‹", PREVIOUS_CANDIDATE_NAME, index > 0, palette)
         .on_hover_text("Previous candidate (Alt+Left)");
     label(
         ui,
-        stepper_label,
+        projections::candidate_label(index, count),
         CompactStyle::Supporting,
         palette.color(Token::Muted),
     );
@@ -570,10 +859,14 @@ pub fn show(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
     ui.add_space(GAP);
     let header = identity_band(ui);
     ui.spacing_mut().item_spacing = item_spacing;
-    // The identities are painted after the panes because they show the
-    // notices this frame's panes report, a copy made this frame included.
+    // The identities take their focus nodes before the panes, so Tab
+    // reaches the header before the panes, in reading order; they are
+    // painted after the panes because they show the notices this frame's
+    // panes report, a copy made this frame included. During a splitter
+    // drag the nodes therefore follow the split one frame late.
+    let focus = identity_nodes(ui, cx, &view, header);
     let notices = diff_view::show(ui, cx.compare, cx.input_enabled);
-    identities(ui, cx, &view, header, &notices, palette);
+    identities(ui, cx, intents, &view, header, &notices, &focus, palette);
     if cx.preferences.compare_split_ratio.to_bits() != cx.compare.split_ratio.to_bits() {
         cx.preferences.compare_split_ratio = cx.compare.split_ratio;
     }
@@ -798,12 +1091,103 @@ fn stale_marker(
     ui.spacing_mut().item_spacing.x = 20.0;
 }
 
+/// The change row's three groups, in reading order. Each stays whole on
+/// one line; the row wraps between groups, never inside one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChangeGroup {
+    /// Change position, ‹ Previous and Next ›.
+    Navigation,
+    /// Wrap and Linked scroll, after a divider when it follows the
+    /// navigation on the same line.
+    Toggles,
+    /// The Original | Normalized switch, at the line's trailing edge.
+    Mode,
+}
+
 /// Change position, ‹ Previous and Next ›, Wrap, Linked scroll and the
 /// Original | Normalized switch (frame `13:1379`).
+///
+/// The row is width-checked (T40): when its three groups do not fit one
+/// line, it wraps between groups onto further 28-high lines, `GAP` apart,
+/// and everything below moves down. Wrapping keeps every control directly
+/// on screen and keyboard-reachable in place. Rejected: overflowing Wrap or
+/// Linked scroll into a menu, which would hide the state of two toggles
+/// the panes' layout depends on; and shrinking the groups, which would cut
+/// the labels the outcome requires whole.
 fn change_row(
     ui: &mut Ui,
     cx: &mut WorkspaceCx<'_>,
     aligned: Option<&AlignedComparison>,
+    palette: &Palette,
+) {
+    let changes = aligned.map_or(0, |a| a.hunks.len());
+    let lines = change_lines(ui, cx, changes);
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            ui.add_space(GAP);
+        }
+        change_line(ui, cx, line, changes, palette);
+    }
+}
+
+/// Splits the change row's groups into lines that each fit the row width,
+/// greedily in reading order. The divider before the toggles is counted
+/// only where it is drawn, beside the navigation.
+fn change_lines(ui: &Ui, cx: &WorkspaceCx<'_>, changes: usize) -> Vec<Vec<ChangeGroup>> {
+    let spacing = ui.spacing().item_spacing.x;
+    let width = ui.available_width();
+    let check = |text: &str| 16.0 + 8.0 + text_width(ui, text, CompactStyle::Table);
+    let navigation = row_width(
+        &[
+            text_width(
+                ui,
+                &projections::change_label(cx.compare.active_change, changes),
+                CompactStyle::Supporting,
+            ),
+            text_width(ui, PREVIOUS_CHANGE_NAME, CompactStyle::ControlLabel),
+            text_width(ui, NEXT_CHANGE_NAME, CompactStyle::ControlLabel),
+        ],
+        spacing,
+    );
+    let toggles = row_width(&[check(WRAP_NAME), check(LINKED_SCROLL_NAME)], spacing);
+    let divider = DIVIDER_WIDTH + spacing;
+    let mode = view_mode_width(ui);
+    let group_width = |group: ChangeGroup, after: Option<ChangeGroup>| match group {
+        ChangeGroup::Navigation => navigation,
+        ChangeGroup::Toggles if after == Some(ChangeGroup::Navigation) => divider + toggles,
+        ChangeGroup::Toggles => toggles,
+        ChangeGroup::Mode => mode,
+    };
+    let mut lines: Vec<Vec<ChangeGroup>> = Vec::new();
+    let mut used = 0.0;
+    for group in [
+        ChangeGroup::Navigation,
+        ChangeGroup::Toggles,
+        ChangeGroup::Mode,
+    ] {
+        if let Some(line) = lines.last_mut() {
+            let extra = spacing + group_width(group, line.last().copied());
+            if used + extra <= width {
+                used += extra;
+                line.push(group);
+                continue;
+            }
+        }
+        used = group_width(group, None);
+        lines.push(vec![group]);
+    }
+    lines
+}
+
+/// The vertical divider's own width; `egui::Separator` with spacing 8.
+const DIVIDER_WIDTH: f32 = 8.0;
+
+/// One line of the change row holding `groups`.
+fn change_line(
+    ui: &mut Ui,
+    cx: &mut WorkspaceCx<'_>,
+    groups: &[ChangeGroup],
+    changes: usize,
     palette: &Palette,
 ) {
     // The row keeps its 28 units while ‹ Previous and Next › stay 30 high,
@@ -822,62 +1206,83 @@ fn change_row(
             .layout(Layout::left_to_right(Align::Center)),
     );
     let ui = &mut row_ui;
-    let changes = aligned.map_or(0, |a| a.hunks.len());
     let active = cx.compare.active_change;
-    label(
-        ui,
-        projections::change_label(active, changes),
-        CompactStyle::Supporting,
-        palette.color(Token::Muted),
-    );
-    let previous = plain(
-        ui,
-        PREVIOUS_CHANGE_NAME,
-        PREVIOUS_CHANGE_NAME,
-        active > 0,
-        palette,
-    )
-    .on_hover_text("Previous change (Alt+Up)");
-    let next = plain(
-        ui,
-        NEXT_CHANGE_NAME,
-        NEXT_CHANGE_NAME,
-        active + 1 < changes,
-        palette,
-    )
-    .on_hover_text("Next change (Alt+Down)");
-    if cx.input_enabled && previous.clicked() {
-        set_change(cx.compare, false);
+    if groups.contains(&ChangeGroup::Navigation) {
+        label(
+            ui,
+            projections::change_label(active, changes),
+            CompactStyle::Supporting,
+            palette.color(Token::Muted),
+        );
+        let previous = plain(
+            ui,
+            PREVIOUS_CHANGE_NAME,
+            PREVIOUS_CHANGE_NAME,
+            active > 0,
+            palette,
+        )
+        .on_hover_text("Previous change (Alt+Up)");
+        let next = plain(
+            ui,
+            NEXT_CHANGE_NAME,
+            NEXT_CHANGE_NAME,
+            active + 1 < changes,
+            palette,
+        )
+        .on_hover_text("Next change (Alt+Down)");
+        if cx.input_enabled && previous.clicked() {
+            set_change(cx.compare, false);
+        }
+        if cx.input_enabled && next.clicked() {
+            set_change(cx.compare, true);
+        }
     }
-    if cx.input_enabled && next.clicked() {
-        set_change(cx.compare, true);
+    if groups.contains(&ChangeGroup::Toggles) {
+        if groups.contains(&ChangeGroup::Navigation) {
+            ui.add(egui::Separator::default().vertical().spacing(DIVIDER_WIDTH));
+        }
+        let wrap = check_box(
+            ui,
+            cx.compare.wrap,
+            Some(WRAP_NAME),
+            WRAP_NAME,
+            cx.input_enabled,
+        )
+        .on_hover_text("Toggle wrap (Alt+Z)");
+        if cx.input_enabled && wrap.clicked() {
+            toggle_wrap(cx);
+        }
+        let linked = check_box(
+            ui,
+            cx.compare.linked_scroll,
+            Some(LINKED_SCROLL_NAME),
+            LINKED_SCROLL_NAME,
+            cx.input_enabled,
+        )
+        .on_hover_text("Toggle linked scroll (Alt+L)");
+        if cx.input_enabled && linked.clicked() {
+            toggle_linked(cx);
+        }
     }
-    ui.add(egui::Separator::default().vertical().spacing(8.0));
-    let wrap = check_box(
-        ui,
-        cx.compare.wrap,
-        Some(WRAP_NAME),
-        WRAP_NAME,
-        cx.input_enabled,
-    )
-    .on_hover_text("Toggle wrap (Alt+Z)");
-    if cx.input_enabled && wrap.clicked() {
-        toggle_wrap(cx);
+    if groups.contains(&ChangeGroup::Mode) {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            view_mode(ui, cx, palette);
+        });
     }
-    let linked = check_box(
-        ui,
-        cx.compare.linked_scroll,
-        Some(LINKED_SCROLL_NAME),
-        LINKED_SCROLL_NAME,
-        cx.input_enabled,
-    )
-    .on_hover_text("Toggle linked scroll (Alt+L)");
-    if cx.input_enabled && linked.clicked() {
-        toggle_linked(cx);
-    }
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        view_mode(ui, cx, palette);
-    });
+}
+
+/// Horizontal padding inside each segment of the Original | Normalized
+/// switch (frame `13:1379`: 8 either side of the label).
+const SEGMENT_PADDING: f32 = 8.0;
+
+/// The switch's laid-out width: both segments and the frame's 1-unit
+/// margin either side.
+fn view_mode_width(ui: &Ui) -> f32 {
+    [ORIGINAL_NAME, NORMALIZED_NAME]
+        .iter()
+        .map(|name| text_width(ui, name, CompactStyle::ControlLabel) + 2.0 * SEGMENT_PADDING)
+        .sum::<f32>()
+        + 2.0
 }
 
 /// The bordered Original | Normalized switch. Choosing a mode only sets
@@ -901,8 +1306,15 @@ fn view_mode(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, palette: &Palette) {
                 } else {
                     Token::Muted
                 });
+                // Both segments are sized from their own label plus
+                // `SEGMENT_PADDING`. Rejected: a frameless egui button for
+                // the unselected segment, which drops the button margin
+                // with the frame, so "Normalized" ran into the switch's
+                // border and read as clipped (T24).
+                let width =
+                    text_width(ui, name, CompactStyle::ControlLabel) + 2.0 * SEGMENT_PADDING;
                 let mut button = egui::Button::new(styled(name, CompactStyle::ControlLabel, color))
-                    .min_size(Vec2::new(0.0, 26.0))
+                    .min_size(Vec2::new(width, 26.0))
                     .corner_radius(0.0);
                 button = if selected {
                     button.fill(palette.color(Token::PrimarySoft))
@@ -930,25 +1342,152 @@ fn identity_band(ui: &mut Ui) -> Rect {
     band
 }
 
-/// Paints the pinned file identity above each pane into `band`, on the
-/// panes' own split, each with its pane's notice from `notices`.
-fn identities(
+/// The two identity rects in `band`, A then B, on the panes' split.
+fn identity_rects(compare: &CompareState, band: Rect) -> [Rect; 2] {
+    let ratio = compare.split_ratio.clamp(SPLIT_RANGE.0, SPLIT_RANGE.1);
+    let usable = (band.width() - PANE_GAP).max(2.0);
+    let split = band.left() + (usable * ratio).round();
+    [
+        Rect::from_min_max(band.min, egui::pos2(split, band.bottom())),
+        Rect::from_min_max(egui::pos2(split + PANE_GAP, band.top()), band.max),
+    ]
+}
+
+/// One focusable accessibility node per identity row, its texts painted
+/// later by [`pinned_identity`]. Rejected: a label widget per text, which
+/// puts a second node named exactly like the file next to Review unique
+/// text's own when that popup opens over Compare, so a query for the
+/// popup's file name is no longer unique (`tests/review_popups.rs` asks for
+/// it by name). One node per row is also how the diff widget names its
+/// rows.
+///
+/// The row is focusable (spec line 1125: details and copy actions must be
+/// keyboard-reachable, hover alone is insufficient), so Tab reaches it and
+/// [`identities`] then shows the full path and takes the Copy path chord.
+fn identity_nodes(
     ui: &mut Ui,
     cx: &WorkspaceCx<'_>,
     view: &CompareView,
     band: Rect,
+) -> [Response; 2] {
+    let rects = identity_rects(cx.compare, band);
+    [(&view.a, rects[0]), (&view.b, rects[1])].map(|(identity, rect)| {
+        let response = ui.interact(
+            rect,
+            Id::unique(("fd.compare.identity", identity.file)),
+            Sense::focusable_noninteractive(),
+        );
+        let name = projections::identity_name(identity);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &name));
+        response
+    })
+}
+
+/// Takes Ctrl+Shift+C, exactly, from this frame's events: the Copy path
+/// chord Findings binds for its rows (`grouped_table.rs`), so the one chord
+/// copies a path in both workspaces. egui sets `command` beside `ctrl` on
+/// this platform family, so either counts as Ctrl.
+fn take_copy_path(ui: &Ui) -> bool {
+    ui.input_mut(|input| {
+        let mut hit = false;
+        input.events.retain(|event| {
+            let Event::Key {
+                key: Key::C,
+                pressed,
+                modifiers,
+                ..
+            } = event
+            else {
+                return true;
+            };
+            let exact = (modifiers.ctrl || modifiers.command) && modifiers.shift && !modifiers.alt;
+            if exact {
+                hit |= *pressed;
+            }
+            !exact
+        });
+        hit
+    })
+}
+
+/// Paints the pinned file identity above each pane into `band`, on the
+/// panes' own split, each with its pane's notice from `notices`, and gives
+/// the row with keyboard focus its full path and Copy path.
+///
+/// Full-path access (spec §11.3 "accessible full path", line 1125): while
+/// a row has keyboard focus, a tooltip shows its complete path and names
+/// the chord; Ctrl+Shift+C then copies the path through the shared
+/// `UiIntent::CopyPath`, which copies the member's stored `display_path`,
+/// the same string the row shows. Pointer users get the same tooltip on
+/// hover. Rejected: expanding the path line in place, which has no room in
+/// the 54-high row for a deep path at 200%; and a Copy path button in the
+/// row, which would compete with the role and the notice for the row's
+/// trailing edge at 1024 units.
+#[allow(clippy::too_many_arguments)]
+fn identities(
+    ui: &mut Ui,
+    cx: &WorkspaceCx<'_>,
+    intents: &mut IntentQueue,
+    view: &CompareView,
+    band: Rect,
     notices: &diff_view::PaneNotices,
+    focus: &[Response; 2],
     palette: &Palette,
 ) {
-    let ratio = cx.compare.split_ratio.clamp(SPLIT_RANGE.0, SPLIT_RANGE.1);
-    let usable = (band.width() - PANE_GAP).max(2.0);
-    let split = band.left() + (usable * ratio).round();
-    let rects = [
-        Rect::from_min_max(band.min, egui::pos2(split, band.bottom())),
-        Rect::from_min_max(egui::pos2(split + PANE_GAP, band.top()), band.max),
-    ];
-    for ((rect, identity), notice) in rects.into_iter().zip([&view.a, &view.b]).zip(notices) {
+    let rects = identity_rects(cx.compare, band);
+    for (((rect, identity), notice), response) in rects
+        .into_iter()
+        .zip([&view.a, &view.b])
+        .zip(notices)
+        .zip(focus)
+    {
         pinned_identity(ui, rect, identity, notice.as_deref(), palette);
+        let details = |ui: &mut Ui| {
+            ui.add(
+                egui::Label::new(styled(
+                    identity.path.clone(),
+                    CompactStyle::PathDetail,
+                    palette.color(Token::Ink),
+                ))
+                .selectable(false)
+                .wrap(),
+            );
+            label(
+                ui,
+                COPY_PATH_HINT,
+                CompactStyle::Supporting,
+                palette.color(Token::Muted),
+            );
+        };
+        if response.has_focus() {
+            response.show_tooltip_ui(details);
+            if cx.input_enabled && take_copy_path(ui) {
+                intents.push(UiIntent::CopyPath(identity.file));
+            }
+        } else {
+            response.clone().on_hover_ui(details);
+        }
+    }
+}
+
+/// The second line of the identity's full-path tooltip.
+pub const COPY_PATH_HINT: &str = "Copy path: Ctrl+Shift+C";
+
+/// The colour of an identity's role, from the decision it names: the
+/// tokens the Findings Decision cell gives the same words
+/// (`grouped_table.rs`, `decision_cell`), so the pane says what Findings
+/// says about the row in the same colour. Frame `13:1304` draws "B · Review
+/// first" amber and "A · Reference" ink; the Decision cell's muted
+/// Reference is not followed here, because the frame does not.
+fn role_token(role: &str) -> Token {
+    let decision = role
+        .split_once(" · ")
+        .map_or(role, |(_, decision)| decision);
+    match decision {
+        "Queued" => Token::Red,
+        "Review first" | "Counterpart queued" | "Counterpart of a queued file" => Token::Amber,
+        "Kept" => Token::Green,
+        _ => Token::Ink,
     }
 }
 
@@ -968,20 +1507,6 @@ fn pinned_identity(
     notice: Option<&str>,
     palette: &Palette,
 ) {
-    // One accessibility node for the whole row, its texts painted. Rejected:
-    // a label widget per text, which puts a second node named exactly like
-    // the file next to Review unique text's own when that popup opens over
-    // Compare, so a query for the popup's file name is no longer unique
-    // (`tests/review_popups.rs` asks for it by name). One node per row is
-    // also how the diff widget names its rows.
-    let response = ui.interact(
-        rect,
-        Id::unique(("fd.compare.identity", identity.file)),
-        Sense::hover(),
-    );
-    let name = projections::identity_name(identity);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &name));
-
     let painter = ui.painter();
     painter.rect(
         rect,
@@ -998,10 +1523,11 @@ fn pinned_identity(
     let inner = rect.shrink(8.0);
     let ink = palette.color(Token::Ink);
     let muted = palette.color(Token::Muted);
+    let role_color = palette.color(role_token(&identity.role));
     let role = painter.layout_no_wrap(
         identity.role.clone(),
         CompactStyle::Supporting.font_id(),
-        ink,
+        role_color,
     );
     let role_left = inner.right() - role.size().x;
     let role_top = if notice.is_some() {
@@ -1009,7 +1535,7 @@ fn pinned_identity(
     } else {
         inner.center().y - role.size().y / 2.0
     };
-    painter.galley(egui::pos2(role_left, role_top), role, ink);
+    painter.galley(egui::pos2(role_left, role_top), role, role_color);
     // Each text line ends 8 before whatever trails it on that line: the
     // role (centred across both lines, or on the name's line beside a
     // notice) and the notice on the path's line.

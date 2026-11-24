@@ -668,7 +668,9 @@ pub enum ShortcutScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ShortcutRow {
     pub scope: ShortcutScope,
-    /// The spec's Keys cell; " / " separates the chords of one row.
+    /// The spec's Keys cell, verbatim. " / ", ", " and " or " separate the
+    /// chords of one row; `keyboard_shortcuts::chords` splits on all three
+    /// to draw one cap per chord (spec §11.6).
     pub keys: &'static str,
     pub action: &'static str,
 }

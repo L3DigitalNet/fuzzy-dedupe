@@ -672,7 +672,8 @@ mod integration {
         // Non-default Compare view state a popup could reset.
         key(&mut h, Modifiers::ALT, Key::Z);
         key(&mut h, Modifiers::ALT, Key::ArrowDown);
-        assert!(state(&h).compare.wrap, "wrap on");
+        // Wrap starts on (frame `13:1304`), so Alt+Z leaves it off.
+        assert!(!state(&h).compare.wrap, "wrap off, against the default");
         popup_round_trip(&mut h, WorkspaceState::Compare);
     }
 
@@ -1224,7 +1225,11 @@ mod integration {
     fn attempt(kind: RowKind, entry: Entry) -> Option<Outcome> {
         let (mut h, target) = row_kind(kind);
         if !trigger(&mut h, entry, target) {
-            assert_eq!(kind, RowKind::Reference, "{entry:?} absent for {kind:?}");
+            assert!(
+                kind == RowKind::Reference
+                    || (kind == RowKind::Protected && entry == Entry::Checkbox),
+                "{entry:?} absent for {kind:?}"
+            );
             return None;
         }
         let queued_at_once = state(&h).queue.is_queued(target);
@@ -1267,6 +1272,14 @@ mod integration {
         let available: Vec<Entry> = outcomes.iter().map(|(e, _)| *e).collect();
         if kind == RowKind::Reference {
             assert_eq!(available, [Entry::Space], "only Space reaches a reference");
+        } else if kind == RowKind::Protected {
+            // Frame `13:648` (T40 Q9): a protected row shows no queue
+            // checkbox; every other entry point still reaches it and refuses.
+            assert_eq!(
+                available,
+                [Entry::Space, Entry::RowMenu, Entry::CompareQueueB],
+                "{kind:?}: every control but the checkbox present"
+            );
         } else {
             assert_eq!(available, ENTRIES, "{kind:?}: every control present");
         }

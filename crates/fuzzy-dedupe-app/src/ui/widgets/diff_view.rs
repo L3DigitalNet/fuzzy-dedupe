@@ -46,6 +46,15 @@
 //! (an emoji or a CJK character) can therefore overflow the wrap width and
 //! is clipped at the pane edge; its row height stays correct.
 //!
+//! Wrapping breaks between words, as frame `29:3648` does: a visual line
+//! ends after its last whitespace that fits, and breaks inside a word only
+//! when that word alone is wider than the line. `chunks` is the one
+//! definition of the visual lines, used by the row heights (`Layout`), the
+//! painter and the hit test, so the three cannot disagree. Only lines
+//! longer than the wrap width are scanned for break points; every other
+//! line is one visual line by its cached character count, so relayout
+//! stays proportional to the long lines, not to the text.
+//!
 //! Selection: a [`TextPosition`] is an aligned row and a character column
 //! in that row's line on the pane's side. A position on a spacer row means
 //! the start of the side's next line, and row `rows.len()` means the end
@@ -462,10 +471,13 @@ impl Layout {
                     .iter()
                     .map(|side| {
                         side.line(row).map_or(1, |line| {
-                            index
-                                .chars_of(*side, line)
-                                .div_ceil(cols[side.index()])
-                                .max(1)
+                            let cols = cols[side.index()];
+                            if index.chars_of(*side, line) <= cols {
+                                1
+                            } else {
+                                let text = side.pane(aligned).shown().line(line).unwrap_or("");
+                                chunks(text, Some(cols)).len()
+                            }
                         })
                     })
                     .max()
@@ -1259,19 +1271,35 @@ fn char_byte(text: &str, column: usize) -> usize {
 /// The visual lines of one source line: byte ranges and the character
 /// index each starts at. One chunk with wrap off, and one for an empty
 /// line.
+///
+/// With wrap on, each visual line holds at most `cols` visible characters
+/// and ends after the last whitespace that keeps it within them; one
+/// whitespace character just past `cols` may hang off the end, since it
+/// draws nothing. A line breaks inside a word only when no whitespace
+/// fits, that is, when one word is wider than the line. The chunks always
+/// cover the text contiguously, so a character column maps to exactly one
+/// chunk for selection and the hit test.
 fn chunks(text: &str, cols: Option<usize>) -> Vec<(Range<usize>, usize)> {
-    let Some(cols) = cols else {
+    let Some(cols) = cols.filter(|&c| c > 0) else {
         return vec![(0..text.len(), 0)];
     };
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let byte = |i: usize| chars.get(i).map_or(text.len(), |&(b, _)| b);
     let mut out = Vec::new();
-    let mut start = (0, 0);
-    for (count, (byte, _)) in text.char_indices().enumerate() {
-        if count > 0 && count % cols == 0 {
-            out.push((start.0..byte, start.1));
-            start = (byte, count);
-        }
+    let mut start = 0;
+    while chars.len() - start > cols {
+        let limit = start + cols;
+        // `k` is a candidate end: the chunk is `start..k`, ending just after
+        // whitespace at `k - 1`. `limit + 1` admits the hanging whitespace;
+        // `chars.len() > limit` keeps `chars[limit]` in bounds.
+        let end = (start + 1..=limit + 1)
+            .rev()
+            .find(|&k| chars[k - 1].1.is_whitespace())
+            .unwrap_or(limit);
+        out.push((byte(start)..byte(end), start));
+        start = end;
     }
-    out.push((start.0..text.len(), start.1));
+    out.push((byte(start)..text.len(), start));
     out
 }
 

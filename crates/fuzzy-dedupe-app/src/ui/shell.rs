@@ -14,8 +14,10 @@
 //!
 //! The workspace views fill the leading toolbar items and the body
 //! (`findings.rs`, `compare.rs`); the shell owns Review cleanup (N) and the
-//! Settings gear, which both workspaces share. Nothing here calls a
-//! service: every action is a pushed [`UiIntent`].
+//! Settings gear, which both workspaces share. [`toolbar_row`] reserves the
+//! shared items' space first and hands each workspace toolbar the rest as
+//! its whole `ui.available_width()` budget. Nothing here calls a service:
+//! every action is a pushed [`UiIntent`].
 
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Rect, Response, Sense, Stroke,
@@ -29,7 +31,7 @@ use crate::presentation::state::{
 };
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
-use crate::ui::widgets::status;
+use crate::ui::widgets::{grouped_table, status};
 use crate::ui::{WorkspaceCx, compare, findings, glyphs};
 
 /// Rail width, expanded and collapsed (spec §11.3).
@@ -51,6 +53,8 @@ pub const MENU_WIDTH: f32 = 260.0;
 pub const RAIL_NAME: &str = "Navigation rail";
 pub const MENU_ENTRY_NAME: &str = "Menu";
 pub const SETTINGS_NAME: &str = "Matching rules";
+/// The region [`toolbar_row`] hands to the workspace toolbar.
+pub const WORKSPACE_TOOLBAR_NAME: &str = "Workspace toolbar";
 
 /// The main menu's six entries, in order (spec §11.2).
 pub const MAIN_MENU_ENTRIES: [&str; 6] = [
@@ -92,6 +96,7 @@ pub fn show(ui: &mut Ui, state: &mut PresentationState, intents: &mut IntentQueu
     let window_width = ctx.content_rect().width();
     let collapsed = rail_width(window_width, state.preferences.rail_collapsed) < RAIL_WIDTH;
     let input_enabled = !state.dialog.is_open();
+    let queued = state.queue.queued_count();
     let review_label = projections::review_cleanup_label(state);
 
     egui::Panel::bottom("fd.status")
@@ -147,17 +152,19 @@ pub fn show(ui: &mut Ui, state: &mut PresentationState, intents: &mut IntentQueu
             // popup body and the rail.
             let item_spacing = ui.spacing().item_spacing;
             ui.spacing_mut().item_spacing.y = 0.0;
-            ui.allocate_ui_with_layout(
-                Vec2::new(ui.available_width(), TOOLBAR_HEIGHT),
-                Layout::left_to_right(Align::Center),
-                |ui| {
-                    match workspace {
-                        WorkspaceState::Findings => findings::toolbar(ui, &mut cx, intents),
-                        WorkspaceState::Compare => compare::toolbar(ui, &mut cx, intents),
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        shared_toolbar_items(ui, &review_label, intents, palette);
-                    });
+            let workspace_min = match workspace {
+                WorkspaceState::Findings => findings::toolbar_min_width(ui, &cx),
+                WorkspaceState::Compare => compare::toolbar_min_width(ui, &cx),
+            };
+            toolbar_row(
+                ui,
+                &review_label,
+                queued,
+                workspace_min,
+                intents,
+                |ui, intents| match workspace {
+                    WorkspaceState::Findings => findings::toolbar(ui, &mut cx, intents),
+                    WorkspaceState::Compare => compare::toolbar(ui, &mut cx, intents),
                 },
             );
             ui.add_space(GAP);
@@ -217,20 +224,26 @@ fn rail(
         (WorkspaceState::Compare, Icon::Compare, "Compare"),
     ] {
         let selected = state.workspace == workspace;
+        // The current workspace is never disabled: Compare reached by
+        // Ctrl+2 without a pair explains itself in its body.
+        let available = workspace != WorkspaceState::Compare || compare_available(state);
         let response = rail_control(
             ui,
             next(NAV_ITEM_HEIGHT),
             Id::unique(("fd.rail.nav", label)),
             if selected {
                 RailLook::Selected
-            } else {
+            } else if available {
                 RailLook::Plain
+            } else {
+                RailLook::Disabled
             },
             Some(icon),
             if collapsed { "" } else { label },
             label,
             palette,
         );
+        let response = response.on_disabled_hover_text(NO_PAIR_EXPLANATION);
         if response.clicked() {
             intents.push(UiIntent::SwitchWorkspace(workspace));
         }
@@ -278,6 +291,37 @@ fn rail(
     menu.rect
 }
 
+/// Whether the rail's Compare entry has a pair to show (spec §11.2): the
+/// focused Findings row is a member with a counterpart, or the last pair is
+/// still a pair of these results.
+///
+/// Mirrors what `presentation/commands.rs` `switch_to_compare` and the
+/// Compare view do with the entry's intent: the first condition is the pair
+/// `switch_to_compare` opens, the second the last pair Compare can show
+/// (`projections::compare_view`). If either rule changes there, change it
+/// here, or the entry is enabled onto the no-pair state or disabled with a
+/// pair to show.
+fn compare_available(state: &PresentationState) -> bool {
+    let Some(results) = state.scan.results.as_ref() else {
+        return false;
+    };
+    let focused = state
+        .findings
+        .focused
+        .and_then(|row| grouped_table::member_at(results, &state.queue, row))
+        .is_some_and(|(_, view)| view.counterpart.is_some());
+    focused
+        || state
+            .compare
+            .pair
+            .is_some_and(|pair| projections::compare_view(results, &state.queue, pair).is_some())
+}
+
+/// The disabled rail Compare entry's explanation, in the words of
+/// Compare's own no-pair state.
+const NO_PAIR_EXPLANATION: &str =
+    "No pair to compare. In Findings, focus a file and press Enter or choose Compare.";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RailLook {
     /// The bordered New scan action.
@@ -285,6 +329,8 @@ enum RailLook {
     /// The current workspace, or the Menu entry while its menu is open.
     Selected,
     Plain,
+    /// Not clickable or focusable; drawn in the quiet ink.
+    Disabled,
 }
 
 /// One rail control at `rect` with a fixed `id`, so its ID is known before
@@ -303,9 +349,15 @@ fn rail_control(
     accessible_name: &str,
     palette: &Palette,
 ) -> Response {
-    let response = ui.interact(rect, id, Sense::click());
+    let enabled = look != RailLook::Disabled;
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, id, sense);
     let name = accessible_name.to_owned();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &name));
     let radius = CornerRadius::same(theme::CORNER_RADIUS);
     let (fill, stroke, ink) = match look {
         RailLook::Action => (
@@ -327,6 +379,11 @@ fn rail_control(
             Color32::TRANSPARENT,
             Stroke::NONE,
             palette.color(Token::Ink),
+        ),
+        RailLook::Disabled => (
+            Color32::TRANSPARENT,
+            Stroke::NONE,
+            palette.color(Token::Quiet),
         ),
     };
     let painter = ui.painter();
@@ -374,15 +431,150 @@ fn rail_control(
     response
 }
 
-/// Review cleanup (N) and the Settings gear, right to left.
-fn shared_toolbar_items(ui: &mut Ui, label: &str, intents: &mut IntentQueue, palette: &Palette) {
-    let settings = ui.add(
-        egui::Button::new(
-            egui::RichText::new(glyphs::text(ui.ctx(), Icon::Settings).unwrap_or_default())
-                .size(ICON_SIZE),
-        )
-        .min_size(Vec2::splat(CONTROL_HEIGHT)),
+/// The toolbar row (spec §11.3): the workspace toolbar on the left, then
+/// Review cleanup (N) and the Settings gear, which both workspaces share.
+///
+/// Contract with `findings::toolbar` and `compare::toolbar`: the shared
+/// items are measured and their rect reserved first, and `workspace_toolbar`
+/// then draws into a child `Ui` whose `max_rect` ends one item spacing
+/// before them. Inside it `ui.available_width()` is the workspace's whole
+/// budget: nothing else is subtracted, so a workspace that lays its items
+/// out within that width never reaches the shared items, and one that
+/// overruns it overprints them. Overflowing secondary actions into a menu
+/// (§11.3 collapse step 3) is therefore each workspace's job, against this
+/// budget. The budget's region carries the accessible name
+/// [`WORKSPACE_TOOLBAR_NAME`], so tests can see where it ends.
+///
+/// The Review cleanup label: `workspace_min` is the narrowest budget in
+/// which the active workspace shows every toolbar item with nothing moved
+/// into its overflow menu (`findings::toolbar_min_width`, with search at its
+/// minimum; `compare::toolbar_min_width`). The full "Review cleanup (N)"
+/// shows when that budget remains beside it; otherwise the label shortens
+/// to "Cleanup (N)", so the shell gives up label text before a workspace
+/// gives up an action. Frame `29:2214` keeps the full label in Findings at
+/// 1024 × 600 (its search narrows instead); frame `29:3648` shortens it in
+/// Compare at the same size. Widths are in points, so zoom takes part, and
+/// at 200% whichever label fits wins. The minimum is measured before the
+/// workspace draws and never from the budget it is then given, so the
+/// choice cannot oscillate between frames. When even the short label leaves
+/// less than `workspace_min`, the workspace collapses into its own menu
+/// against the smaller budget. Rejected: a fixed row-width threshold, which
+/// shortened the label in Findings at 1024 × 600 where the frame keeps it.
+///
+/// The shared items are drawn after the workspace toolbar, not before,
+/// although their space is taken first: egui's Tab order is drawing order,
+/// and keyboard focus must reach the workspace's controls before the
+/// shared ones, left to right as they appear. Rejected: each workspace
+/// measuring the shared items itself, which duplicates their width rule in
+/// both workspaces and cannot follow the short label.
+///
+/// `review_label` is the full "Review cleanup (N)" and `queued` its N.
+pub fn toolbar_row(
+    ui: &mut Ui,
+    review_label: &str,
+    queued: usize,
+    workspace_min: f32,
+    intents: &mut IntentQueue,
+    workspace_toolbar: impl FnOnce(&mut Ui, &mut IntentQueue),
+) {
+    let palette = theme::palette(mode_of(ui.ctx()));
+    let (_, row) = ui.allocate_space(Vec2::new(ui.available_width(), TOOLBAR_HEIGHT));
+    let spacing = ui.spacing().item_spacing.x;
+
+    let review_width = |ui: &Ui, label: &str| {
+        ui.painter()
+            .layout_no_wrap(
+                label.to_owned(),
+                CompactStyle::ControlLabel.font_id(),
+                palette.color(Token::White),
+            )
+            .size()
+            .x
+            + 2.0 * ui.spacing().button_padding.x
+    };
+    // The budget a shared-items width leaves the workspace: the row less
+    // the gear, Review cleanup, the gap between them and the gap before.
+    let budget_beside = |review: f32| row.width() - (CONTROL_HEIGHT + spacing + review) - spacing;
+    let full_width = review_width(ui, review_label);
+    let short_label;
+    let (label, review_width) = if budget_beside(full_width) >= workspace_min {
+        (review_label, full_width)
+    } else {
+        short_label = format!("Cleanup ({queued})");
+        let width = review_width(ui, &short_label);
+        (short_label.as_str(), width)
+    };
+    let shared_width = CONTROL_HEIGHT + spacing + review_width;
+    let shared = Rect::from_min_max(
+        egui::pos2(row.right() - shared_width, row.top()),
+        row.right_bottom(),
     );
+    let budget = Rect::from_min_max(
+        row.left_top(),
+        egui::pos2((shared.left() - spacing).max(row.left()), row.bottom()),
+    );
+
+    let region = ui.interact(budget, Id::unique("fd.toolbar.workspace"), Sense::hover());
+    region
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Group, true, WORKSPACE_TOOLBAR_NAME));
+    let mut workspace = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("fd.toolbar.workspace")
+            .max_rect(budget)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    workspace_toolbar(&mut workspace, intents);
+
+    let mut items = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("fd.toolbar.shared")
+            .max_rect(shared)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    shared_toolbar_items(
+        &mut items,
+        label,
+        review_label,
+        review_width,
+        queued,
+        intents,
+        palette,
+    );
+}
+
+/// The Settings gear then Review cleanup, right to left, each sized exactly
+/// as [`toolbar_row`] measured it so the reserved rect holds them.
+///
+/// Review cleanup keeps the full "Review cleanup (N)" as its accessible
+/// name whatever it shows, so assistive tooling and tests find one name;
+/// the short visible label is contained in it. It is disabled while the
+/// queue is empty (frame `28:1399`); the Ctrl+Enter chord is unaffected.
+fn shared_toolbar_items(
+    ui: &mut Ui,
+    label: &str,
+    accessible_name: &str,
+    width: f32,
+    queued: usize,
+    intents: &mut IntentQueue,
+    palette: &Palette,
+) {
+    // The gear is exactly CONTROL_HEIGHT square, the width `toolbar_row`
+    // reserved for it. With egui's button padding the 18-unit glyph asks for
+    // 34, `add_sized` grows to fit, and the right-to-left layout then pushed
+    // Review cleanup 4 units into the gap before it, leaving 4 between the
+    // workspace's last control and Review cleanup instead of 8.
+    let settings = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = Vec2::ZERO;
+            ui.add_sized(
+                Vec2::splat(CONTROL_HEIGHT),
+                egui::Button::new(
+                    egui::RichText::new(glyphs::text(ui.ctx(), Icon::Settings).unwrap_or_default())
+                        .size(ICON_SIZE),
+                ),
+            )
+        })
+        .inner;
     settings.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, SETTINGS_NAME));
     let settings = settings.on_hover_text("Matching rules (Ctrl+,)");
     if settings.clicked() {
@@ -393,13 +585,25 @@ fn shared_toolbar_items(ui: &mut Ui, label: &str, intents: &mut IntentQueue, pal
         });
     }
 
+    let enabled = queued > 0;
     let review = ui
-        .add(
-            egui::Button::new(egui::RichText::new(label).color(palette.color(Token::White)))
-                .fill(palette.color(Token::Primary))
-                .min_size(Vec2::new(0.0, CONTROL_HEIGHT)),
-        )
-        .on_hover_text("Review cleanup (Ctrl+Enter)");
+        .add_enabled_ui(enabled, |ui| {
+            ui.add_sized(
+                Vec2::new(width, CONTROL_HEIGHT),
+                egui::Button::new(
+                    egui::RichText::new(label)
+                        .text_style(CompactStyle::ControlLabel.text_style())
+                        .color(palette.color(Token::White)),
+                )
+                .fill(palette.color(Token::Primary)),
+            )
+        })
+        .inner;
+    let name = accessible_name.to_owned();
+    review.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &name));
+    let review = review
+        .on_hover_text("Review cleanup (Ctrl+Enter)")
+        .on_disabled_hover_text("Nothing is queued for cleanup.");
     if review.clicked() {
         intents.push(UiIntent::OpenDialog {
             subject: DialogSubject::None,
@@ -476,26 +680,33 @@ fn main_menu(
                     });
                 });
                 ui.separator();
-                if menu_item(ui, MAIN_MENU_ENTRIES[2], Some("F1"), palette).clicked() {
-                    intents.push(UiIntent::CloseOverlay);
-                    intents.push(UiIntent::OpenDialog {
-                        subject: DialogSubject::None,
-                        kind: DialogKind::KeyboardShortcuts,
-                        invoker,
-                    });
-                }
-                if menu_item(ui, MAIN_MENU_ENTRIES[3], None, palette).clicked() {
-                    intents.push(UiIntent::CloseOverlay);
-                    intents.push(UiIntent::OpenLogFolder);
-                }
-                if menu_item(ui, MAIN_MENU_ENTRIES[4], None, palette).clicked() {
-                    intents.push(UiIntent::CloseOverlay);
-                    intents.push(UiIntent::OpenDialog {
-                        subject: DialogSubject::None,
-                        kind: DialogKind::About,
-                        invoker,
-                    });
-                }
+                // Frame `44:3954` stacks these rows at a 28-unit pitch;
+                // egui's `item_spacing.y` after each 28-high row would make
+                // it 31. Zeroed for this run of rows only, so the separators
+                // and the Appearance and Zoom rows keep the theme's spacing.
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if menu_item(ui, MAIN_MENU_ENTRIES[2], Some("F1"), palette).clicked() {
+                        intents.push(UiIntent::CloseOverlay);
+                        intents.push(UiIntent::OpenDialog {
+                            subject: DialogSubject::None,
+                            kind: DialogKind::KeyboardShortcuts,
+                            invoker,
+                        });
+                    }
+                    if menu_item(ui, MAIN_MENU_ENTRIES[3], None, palette).clicked() {
+                        intents.push(UiIntent::CloseOverlay);
+                        intents.push(UiIntent::OpenLogFolder);
+                    }
+                    if menu_item(ui, MAIN_MENU_ENTRIES[4], None, palette).clicked() {
+                        intents.push(UiIntent::CloseOverlay);
+                        intents.push(UiIntent::OpenDialog {
+                            subject: DialogSubject::None,
+                            kind: DialogKind::About,
+                            invoker,
+                        });
+                    }
+                });
                 ui.separator();
                 if menu_item(ui, MAIN_MENU_ENTRIES[5], Some("Ctrl+Q"), palette).clicked() {
                     intents.push(UiIntent::Quit);

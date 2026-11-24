@@ -29,7 +29,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use egui::{Align, Color32, Layout, RichText, Stroke, Ui, Vec2};
+use egui::{Align, Color32, Layout, Rect, RichText, Stroke, Ui, Vec2};
 use fuzzy_dedupe_domain::{
     FileId, Measurement, Member, PlanItem, PlanItemReason, PlanItemStatus, PlanRevision,
 };
@@ -105,6 +105,9 @@ pub fn title(cx: &DialogCx<'_>) -> &'static str {
 
 // Column widths and row heights of frame `16:886`.
 const COLUMNS: [f32; 6] = [172.0, 164.0, 88.0, 204.0, 64.0, 128.0];
+/// The narrowest each column shrinks to before the table scrolls sideways
+/// (see [`column_widths`]). Only File, Folder and Kept copy may shrink.
+const MIN_COLUMNS: [f32; 6] = [96.0, 88.0, 88.0, 112.0, 64.0, 128.0];
 const COLUMN_GAP: f32 = 12.0;
 const CELL_PAD: f32 = 8.0;
 const HEADER_HEIGHT: f32 = 28.0;
@@ -627,6 +630,12 @@ impl View<'_> {
     }
 
     /// The File, Folder, Match, Kept copy, Size and Status table.
+    ///
+    /// The columns keep the frame's widths while they fit; under zoom or a
+    /// narrow window the flexible ones shrink (see [`column_widths`]), and
+    /// past their minimums the whole table, header included, scrolls
+    /// sideways inside its own frame (spec §11.6, "grow or internally
+    /// scroll"), so no column is ever drawn past the popup body.
     fn table(&self, ui: &mut Ui) {
         egui::Frame::new()
             .fill(self.palette.color(Token::Code))
@@ -638,96 +647,250 @@ impl View<'_> {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                ui.vertical(|ui| {
-                    self.row_frame(ui, HEADER_HEIGHT, None, |ui| {
-                        for (title, width) in
+                let viewport = ui.available_width();
+                let widths = column_widths(viewport - fixed_span());
+                let width = viewport.max(widths.iter().sum::<f32>() + fixed_span());
+                let revealed = RefCell::new(None);
+                egui::ScrollArea::horizontal()
+                    .id_salt("fd.cleanup.table.x")
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.set_width(width);
+                        let header = row_rect(ui, width, HEADER_HEIGHT, egui::Sense::hover()).rect;
+                        for (index, title) in
                             ["File", "Folder", "Match", "Kept copy", "Size", "Status"]
                                 .into_iter()
-                                .zip(COLUMNS)
+                                .enumerate()
                         {
-                            cell(ui, width, HEADER_HEIGHT, |ui| {
-                                ui.label(self.text(title, CompactStyle::GroupEmphasis, Token::Ink));
-                            });
+                            cell(
+                                ui,
+                                cell_rect(header, &widths, index),
+                                [self.text(title, CompactStyle::GroupEmphasis, Token::Ink)],
+                            );
                         }
+                        egui::ScrollArea::vertical()
+                            .id_salt("fd.cleanup.table")
+                            .max_height(ROW_HEIGHT * VISIBLE_ROWS)
+                            .auto_shrink([false, true])
+                            .show_rows(ui, ROW_HEIGHT, self.rows.len(), |ui, range| {
+                                let first = range.start;
+                                let top = ui.cursor().top();
+                                let pending = ui.data(|d| d.get_temp::<usize>(pending_row_id()));
+                                let mut focused = None;
+                                for (index, item) in range.clone().zip(&self.rows[range]) {
+                                    let response = self.row(ui, width, &widths, item);
+                                    let arrived = pending == Some(index);
+                                    if arrived {
+                                        response.request_focus();
+                                        ui.data_mut(|d| d.remove::<usize>(pending_row_id()));
+                                    }
+                                    if response.gained_focus() || arrived {
+                                        // Consumed by this vertical area, the
+                                        // innermost one still open, so a row
+                                        // Tab or a row key reaches at the
+                                        // table's edge scrolls into view.
+                                        response.scroll_to_me(None);
+                                        revealed
+                                            .replace(Some(response.rect.intersect(ui.clip_rect())));
+                                    }
+                                    if response.has_focus() {
+                                        focused = Some((index, response.id));
+                                    }
+                                }
+                                if let Some((current, id)) = focused {
+                                    // A page is the table's own viewport,
+                                    // not what the popup body leaves of it:
+                                    // at 200% on 1024 × 600 the body shows
+                                    // about one row, and Page Down would be
+                                    // no more than Down. The body scrolls
+                                    // to the target row instead.
+                                    let page = rows_in(ROW_HEIGHT * VISIBLE_ROWS);
+                                    if let Some(to) = self.row_keys(ui, id, current, page) {
+                                        // The target may lie outside the drawn
+                                        // range, so it cannot take focus yet:
+                                        // scroll its slot into view now, without
+                                        // animation, and focus it on the next
+                                        // frame, when `show_rows` draws it.
+                                        ui.data_mut(|d| d.insert_temp(pending_row_id(), to));
+                                        let y = if to >= first {
+                                            top + rows_span(to - first)
+                                        } else {
+                                            top - rows_span(first - to)
+                                        };
+                                        let slot = Rect::from_min_size(
+                                            egui::pos2(ui.min_rect().left(), y),
+                                            Vec2::new(width, ROW_HEIGHT),
+                                        );
+                                        ui.scroll_to_rect_animation(
+                                            slot,
+                                            None,
+                                            egui::style::ScrollAnimation::none(),
+                                        );
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
+                            });
                     });
-                    egui::ScrollArea::vertical()
-                        .id_salt("fd.cleanup.table")
-                        .max_height(ROW_HEIGHT * VISIBLE_ROWS)
-                        .auto_shrink([false, true])
-                        .show_rows(ui, ROW_HEIGHT, self.rows.len(), |ui, range| {
-                            for item in &self.rows[range] {
-                                self.row(ui, item);
-                            }
-                        });
-                });
+                // ORDER: after both table areas have closed, so the popup
+                // body's scroll area is the innermost one left and takes
+                // this target. egui hands a target to the innermost open
+                // area alone, on both axes, and the body's own reveal
+                // (`dialog_host::reveal_focused`) skips a row because the
+                // table's clips cut it; without this, a row focused by Tab
+                // could sit below the body's visible clip at 200% zoom.
+                if let Some(rect) = revealed.into_inner() {
+                    ui.scroll_to_rect(rect, None);
+                }
             });
     }
 
-    fn row_frame(&self, ui: &mut Ui, height: f32, fill: Option<Token>, body: impl FnOnce(&mut Ui)) {
-        let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
-        if let Some(fill) = fill {
-            ui.painter()
-                .rect_filled(rect, 0.0, self.palette.color(fill));
-            ui.painter().hline(
-                rect.x_range(),
-                rect.top(),
-                Stroke::new(theme::BORDER_WIDTH, self.palette.color(Token::Line)),
+    /// One plan item's row: focusable, so the keyboard reaches each file's
+    /// full paths, which the truncated cells cannot show (spec line 1125:
+    /// hover alone is insufficient). Focus, or the pointer over the row,
+    /// opens a tooltip naming the file's and its kept copy's full display
+    /// paths. Tab and Shift+Tab move between the drawn rows; the row keys
+    /// reach every row (see [`View::row_keys`]).
+    fn row(&self, ui: &mut Ui, width: f32, widths: &[f32; 6], item: &PlanItem) -> egui::Response {
+        let status = DialogStatus::of(item.status);
+        // The row's id is its file's, not egui's positional auto id: the
+        // virtualised table draws a different item first as it scrolls, and
+        // a positional id would leave focus on the slot, not the file.
+        let rect = row_rect(ui, width, ROW_HEIGHT, egui::Sense::hover()).rect;
+        let response = ui.interact(
+            rect,
+            egui::Id::unique(("fd.cleanup.row", item.target)),
+            egui::Sense::focusable_noninteractive(),
+        );
+        let target = self.path(item.target);
+        let kept = self.path(item.counterpart);
+        let label = format!("{target}, kept copy {kept}");
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Row, true, &label));
+        let painter = ui.painter();
+        painter.rect_filled(rect, 0.0, self.palette.color(Token::Surface));
+        painter.hline(
+            rect.x_range(),
+            rect.top(),
+            Stroke::new(theme::BORDER_WIDTH, self.palette.color(Token::Line)),
+        );
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                0.0,
+                Stroke::new(theme::BORDER_WIDTH, self.palette.color(Token::Focus)),
+                egui::StrokeKind::Inside,
             );
         }
-        let inner = rect.shrink2(Vec2::new(CELL_PAD, 0.0));
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(inner)
-                .layout(Layout::left_to_right(Align::Center)),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = COLUMN_GAP;
-                body(ui);
-            },
+
+        let mut detail = self.folder(item.counterpart);
+        if self.protected(item.counterpart) {
+            detail.push_str(" · protected");
+        }
+        let state_style = if matches!(status, DialogStatus::Ready | DialogStatus::Waiting) {
+            CompactStyle::Table
+        } else {
+            CompactStyle::ControlLabel
+        };
+        let at = |index| cell_rect(rect, widths, index);
+        cell(
+            ui,
+            at(0),
+            [self.text(self.name(item.target), CompactStyle::Table, Token::Ink)],
         );
+        cell(
+            ui,
+            at(1),
+            [self.text(self.folder(item.target), CompactStyle::Table, Token::Muted)],
+        );
+        cell(
+            ui,
+            at(2),
+            [self.text(self.match_label(item), CompactStyle::Table, Token::Ink)],
+        );
+        cell(
+            ui,
+            at(3),
+            [
+                self.text(self.name(item.counterpart), CompactStyle::Table, Token::Ink),
+                self.text(detail, CompactStyle::Supporting, Token::Muted),
+            ],
+        );
+        cell(
+            ui,
+            at(4),
+            [self.text(
+                size_label(item.size_bytes),
+                CompactStyle::Table,
+                Token::Muted,
+            )],
+        );
+        cell(
+            ui,
+            at(5),
+            [RichText::new(status.label())
+                .font(state_style.font_id())
+                .color(status_color(self.palette, status))],
+        );
+
+        // The pointer test reads the row's rect, not `response.hovered()`:
+        // the cell labels are drawn over the row and take its hover.
+        if response.has_focus() || ui.rect_contains_pointer(rect) {
+            egui::Tooltip::for_widget(&response).show(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(self.text(target, CompactStyle::PathDetail, Token::Ink));
+                ui.label(self.text("Kept copy", CompactStyle::Supporting, Token::Muted));
+                ui.label(self.text(kept, CompactStyle::PathDetail, Token::Ink));
+            });
+        }
+        response
     }
 
-    fn row(&self, ui: &mut Ui, item: &PlanItem) {
-        let status = DialogStatus::of(item.status);
-        self.row_frame(ui, ROW_HEIGHT, Some(Token::Surface), |ui| {
-            let [file, folder, kind, kept, size, state] = COLUMNS;
-            cell(ui, file, ROW_HEIGHT, |ui| {
-                ui.label(self.text(self.name(item.target), CompactStyle::Table, Token::Ink));
-            });
-            cell(ui, folder, ROW_HEIGHT, |ui| {
-                ui.label(self.text(self.folder(item.target), CompactStyle::Table, Token::Muted));
-            });
-            cell(ui, kind, ROW_HEIGHT, |ui| {
-                ui.label(self.text(self.match_label(item), CompactStyle::Table, Token::Ink));
-            });
-            cell(ui, kept, ROW_HEIGHT, |ui| {
-                ui.label(self.text(self.name(item.counterpart), CompactStyle::Table, Token::Ink));
-                let mut detail = self.folder(item.counterpart);
-                if self.protected(item.counterpart) {
-                    detail.push_str(" · protected");
-                }
-                ui.label(self.text(detail, CompactStyle::Supporting, Token::Muted));
-            });
-            cell(ui, size, ROW_HEIGHT, |ui| {
-                ui.label(self.text(
-                    size_label(item.size_bytes),
-                    CompactStyle::Table,
-                    Token::Muted,
-                ));
-            });
-            cell(ui, state, ROW_HEIGHT, |ui| {
-                let style = if matches!(status, DialogStatus::Ready | DialogStatus::Waiting) {
-                    CompactStyle::Table
-                } else {
-                    CompactStyle::ControlLabel
-                };
-                ui.label(
-                    RichText::new(status.label())
-                        .font(style.font_id())
-                        .color(status_color(self.palette, status)),
-                );
-            });
+    /// Reads the row-focus keys while row `current` of the table has focus
+    /// (spec §11.10, the Findings table's "Move row focus" set): Up and
+    /// Down, Page Up and Page Down by `page` rows, Home and End. Returns
+    /// the row to move to, if any.
+    ///
+    /// Tab is the only way into the table, and Tab from a row still leaves
+    /// it, so this is what reaches rows the virtualised table has not drawn
+    /// (NFR-005); Tab alone stops at the drawn ones. Esc and Enter are
+    /// consumed by the dialog host before the body draws. The keys are
+    /// consumed here, and the workspace behind the modal reads none of them
+    /// while a popup is open (`shell.rs`, `input_enabled`).
+    fn row_keys(&self, ui: &Ui, id: egui::Id, current: usize, page: usize) -> Option<usize> {
+        // Arrow keys would otherwise also move egui's own focus to the
+        // geometrically nearest widget, racing this navigation.
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    horizontal_arrows: false,
+                    vertical_arrows: true,
+                    tab: false,
+                    escape: false,
+                },
+            );
         });
+        let last = self.rows.len().saturating_sub(1);
+        let pressed = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+        let mut target = None;
+        if pressed(egui::Key::ArrowDown) {
+            target = Some((current + 1).min(last));
+        }
+        if pressed(egui::Key::ArrowUp) {
+            target = Some(current.saturating_sub(1));
+        }
+        if pressed(egui::Key::PageDown) {
+            target = Some((current + page).min(last));
+        }
+        if pressed(egui::Key::PageUp) {
+            target = Some(current.saturating_sub(page));
+        }
+        if pressed(egui::Key::Home) {
+            target = Some(0);
+        }
+        if pressed(egui::Key::End) {
+            target = Some(last);
+        }
+        target.filter(|&to| to != current)
     }
 
     fn footer(&self, ui: &mut Ui, draft: &mut Draft) -> DialogResponse {
@@ -752,10 +915,16 @@ impl View<'_> {
             CleanupPhase::Finished => moved_so_far("moved to Trash."),
         };
         let mut response = DialogResponse::KeepOpen;
-        ui.horizontal(|ui| {
+        // Both layouts centre on the cross axis and span the whole 30-unit
+        // footer slot, so the note and the buttons share one centre line.
+        // egui aligns a button's label by its Ui's layout, not the button's
+        // own height: `Align::Min` here draws each label at the top of its
+        // button. `ui.horizontal` is avoided too: its row starts at
+        // `interact_size.y` (18) high, and the note would centre on that.
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             self.supporting(ui, note);
-            ui.with_layout(Layout::right_to_left(Align::Min), |ui| match op.phase {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| match op.phase {
                 CleanupPhase::Idle | CleanupPhase::Building | CleanupPhase::Review => {
                     self.confirm_button(ui, draft);
                     let cancel = ui.add(self.secondary_button("Cancel", true));
@@ -866,17 +1035,108 @@ impl View<'_> {
     }
 }
 
-/// One table cell of fixed width, its content vertically centered and
-/// truncated rather than wrapped into the next column.
-fn cell(ui: &mut Ui, width: f32, height: f32, body: impl FnOnce(&mut Ui)) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(width, height),
-        Layout::top_down(Align::Min).with_main_align(Align::Center),
-        |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            body(ui);
-        },
+/// The gaps and the row's inner padding: the part of the table's width
+/// that is not column.
+fn fixed_span() -> f32 {
+    COLUMNS[1..].iter().map(|_| COLUMN_GAP).sum::<f32>() + 2.0 * CELL_PAD
+}
+
+/// The column widths for `room` units of column space (P4, spec §11.6).
+///
+/// Every column keeps its frame width while they all fit. Below that each
+/// one shrinks from its frame width toward its [`MIN_COLUMNS`] width by the
+/// same fraction, so only the flexible columns (File, Folder, Kept copy)
+/// move; past the minimums the widths stay there and the table scrolls
+/// sideways. Rejected: scaling all six columns alike. Match, Size and
+/// Status hold short fixed words ("Identical", "12.8 KiB", "Blocked: no
+/// Trash") that become unreadable once truncated, where a truncated name or
+/// folder is still recognisable and the focused row shows it in full.
+fn column_widths(room: f32) -> [f32; 6] {
+    let natural: f32 = COLUMNS.iter().sum();
+    let least: f32 = MIN_COLUMNS.iter().sum();
+    let t = ((room - least) / (natural - least)).clamp(0.0, 1.0);
+    std::array::from_fn(|i| MIN_COLUMNS[i] + (COLUMNS[i] - MIN_COLUMNS[i]) * t)
+}
+
+/// Allocates one full-width row or header band of exactly `height`.
+///
+/// Its cells are drawn afterwards into child Uis of the returned rect
+/// (see [`cell`]), never through `scope_builder` or `allocate_ui_*` on this
+/// Ui. Those move the parent's cursor to the bottom of what the child
+/// actually drew (egui's `advance_after_rects` sets `cursor.min.y`; it does
+/// not take a maximum), so after this allocation they would rewind the
+/// cursor to the bottom of the row's text: rows shrink to their text
+/// height (about 33 units, T24 triage), the header band to one line, each
+/// row draws over the rest of the previous one's fill, and `show_rows`,
+/// which assumes `ROW_HEIGHT` per row, leaves blank space under the last.
+fn row_rect(ui: &mut Ui, width: f32, height: f32, sense: egui::Sense) -> egui::Response {
+    ui.allocate_exact_size(Vec2::new(width, height), sense).1
+}
+
+/// Where the table keeps the row that a row key moved to and that takes
+/// focus once drawn (see [`View::row_keys`]). egui temp data, not the
+/// draft: it lives across the frames of one move and nothing else.
+fn pending_row_id() -> egui::Id {
+    egui::Id::unique("fd.cleanup.row.pending")
+}
+
+/// The rows wholly visible in `height`, at least one: a page for Page Up
+/// and Page Down.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a finite, non-negative row count, floored"
+)]
+fn rows_in(height: f32) -> usize {
+    (height / ROW_HEIGHT).floor().max(1.0) as usize
+}
+
+/// The height of `rows` table rows.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "row counts stay far below f32's 2^24 exact-integer range"
+)]
+fn rows_span(rows: usize) -> f32 {
+    rows as f32 * ROW_HEIGHT
+}
+
+/// Column `index`'s rect within `row`, inside the row's padding.
+fn cell_rect(row: Rect, widths: &[f32; 6], index: usize) -> Rect {
+    let left = row.left() + CELL_PAD + widths[..index].iter().map(|w| w + COLUMN_GAP).sum::<f32>();
+    Rect::from_min_size(
+        egui::pos2(left, row.top()),
+        Vec2::new(widths[index], row.height()),
+    )
+}
+
+/// One table cell: its lines stacked, truncated rather than wrapped into
+/// the next column, and centred as a block in the cell's height.
+///
+/// The lines are laid out before anything is added, so the block's height
+/// is known and the offset to centre it can be added first. Rejected: a
+/// `top_down` layout `with_main_align(Align::Center)`. egui reads a
+/// layout's main alignment only to align content within a single widget,
+/// such as a button's text; it never places child widgets, so the lines
+/// stacked from the cell's top. `egui::Aligned` would centre by measuring
+/// on a discarded pass, which a virtualized table pays on every scroll.
+fn cell<const N: usize>(ui: &mut Ui, rect: Rect, lines: [RichText; N]) {
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Min)),
     );
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let galleys = lines.map(|line| {
+        egui::WidgetText::from(line).into_galley(
+            &ui,
+            Some(egui::TextWrapMode::Truncate),
+            rect.width(),
+            egui::FontSelection::Default,
+        )
+    });
+    let height: f32 = galleys.iter().map(|g| g.size().y).sum();
+    ui.add_space(((rect.height() - height) / 2.0).max(0.0));
+    for galley in galleys {
+        ui.add(egui::Label::new(galley));
+    }
 }

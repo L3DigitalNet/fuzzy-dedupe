@@ -792,12 +792,16 @@ mod compare_workspace {
         let mut h = launch_design();
         assert_eq!(state(&h).findings.focused, None);
         // The rail entry, not the Findings toolbar's Compare action, which
-        // has the same name and sits further right.
-        h.query_all_by_role_and_label(Role::Button, "Compare")
-            .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
-            .expect("the rail's Compare entry")
-            .click();
-        settle(&mut h);
+        // has the same name and sits further right, is itself disabled with
+        // no pair (T40 S3); Ctrl+2 still shows Compare's explanation.
+        assert!(
+            h.query_all_by_role_and_label(Role::Button, "Compare")
+                .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+                .expect("the rail's Compare entry")
+                .accesskit_node()
+                .is_disabled()
+        );
+        key(&mut h, Modifiers::CTRL, Key::Num2);
         assert_eq!(state(&h).workspace, WorkspaceState::Compare);
         assert_eq!(state(&h).compare.pair, None);
         h.get_by_label("No pair to compare");

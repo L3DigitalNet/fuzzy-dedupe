@@ -13,21 +13,23 @@ use std::fmt::Write as _;
 use std::time::SystemTime;
 
 use fuzzy_dedupe_domain::{
-    ContainmentDirection, FileId, Group, GroupId, Measurement, Member, MemberDecision, MemberRole,
-    Refusal, RelationKind, ScanId, ScanResults,
+    CompareMode, ContainmentDirection, FileId, Group, GroupId, Measurement, Member, MemberDecision,
+    MemberRole, Refusal, RelationKind, ScanId, ScanResults,
 };
 use fuzzy_dedupe_engine::compare::ComparisonRequest;
 
 use crate::presentation::state::{
     ComparePair, FindingsState, PresentationState, QueueState, RowId, ScanStage, SortKey,
+    WorkspaceState,
 };
 
 /// The status bar's two ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusLine {
-    /// Scan counts and completion, or the scan's progress.
+    /// Scan counts and completion, or the scan's progress; in Compare, the
+    /// pair's group and which side is the comparison reference.
     pub left: String,
-    /// The queue count.
+    /// The queue count, after Compare's read-only and unique-text notes.
     pub right: String,
 }
 
@@ -45,10 +47,19 @@ pub fn thousands(value: u64) -> String {
     out
 }
 
-/// The compact status line (frames `13:648`, `28:1399`).
+/// Separator between the status line's parts.
+const STATUS_SEPARATOR: &str = "   ·   ";
+
+/// The compact status line (frames `13:648`, `28:1399`; in Compare,
+/// `13:1304`). Compare with no pair of these results shows the scan line.
 #[must_use]
 pub fn status_line(state: &PresentationState) -> StatusLine {
-    const SEP: &str = "   ·   ";
+    const SEP: &str = STATUS_SEPARATOR;
+    if state.workspace == WorkspaceState::Compare
+        && let Some(line) = compare_status_line(state)
+    {
+        return line;
+    }
     let left = match (&state.scan.results, state.scan.stage) {
         (_, ScanStage::Running | ScanStage::Stopping) => {
             let progress = state.scan.progress.as_ref();
@@ -85,6 +96,59 @@ pub fn status_line(state: &PresentationState) -> StatusLine {
         right.push_str(&note);
     }
     StatusLine { left, right }
+}
+
+/// Compare's status line (frame `13:1304`): "G004 · 3 files · A is the
+/// comparison reference" and "Read-only · Unique text on both sides · 3
+/// queued", or `None` when Compare shows no pair of these results.
+///
+/// Side A is always the counterpart, the evidence anchor (C-04, see
+/// [`CompareView`]), so "A is the comparison reference" is a fact of the
+/// layout, not of the sample. The unique-text note reads the comparison on
+/// screen and is left out until that comparison is ready for this pair;
+/// in Normalized mode it says so, because its lines were measured on
+/// normalized text (§10.1, §11.5 rule 3).
+fn compare_status_line(state: &PresentationState) -> Option<StatusLine> {
+    const SEP: &str = STATUS_SEPARATOR;
+    let results = state.scan.results.as_ref()?;
+    let pair = state.compare.pair?;
+    let view = compare_view(results, &state.queue, pair)?;
+    let group = results.groups.iter().find(|g| g.id == pair.group)?;
+    let left = format!(
+        "{} · {} files{SEP}A is the comparison reference",
+        view.group_label,
+        thousands(group.members.len() as u64)
+    );
+
+    let mut right = "Read-only".to_owned();
+    // The slot is shared with Review unique text, so it may hold another
+    // pair's comparison; only this pair's own result describes the panes.
+    let aligned = state
+        .compare
+        .comparison
+        .result
+        .as_ref()
+        .filter(|c| c.request.target == pair.target && c.request.counterpart == pair.counterpart)
+        .and_then(|_| state.compare.comparison.aligned());
+    if let Some(aligned) = aligned {
+        let note = match (aligned.only_in_a.count() > 0, aligned.only_in_b.count() > 0) {
+            (true, true) => "Unique text on both sides",
+            (true, false) => "Unique text only in A",
+            (false, true) => "Unique text only in B",
+            (false, false) => "No unique text",
+        };
+        right.push_str(SEP);
+        right.push_str(note);
+        if aligned.mode == CompareMode::Normalized {
+            right.push_str(" (normalized)");
+        }
+    }
+    let _ = write!(
+        right,
+        "{SEP}{} queued",
+        thousands(state.queue.queued_count() as u64)
+    );
+    Some(StatusLine { left, right })
 }
 
 // ── Findings projections (T13) ───────────────────────────────────────────
