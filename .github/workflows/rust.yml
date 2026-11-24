@@ -5,8 +5,10 @@
 # required checks and later milestones refer to them, so renaming one is a
 # contract change, not a cleanup.
 #
-# Supply chain (plan D-004): the only action is actions/checkout, pinned to
-# the commit admission.yml uses. The toolchain comes from rust-toolchain.toml
+# Supply chain (plan D-004): the actions are actions/checkout, pinned to the
+# commit admission.yml uses, and, in `ui-test` only, actions/upload-artifact
+# (MS-1 plan T22), both first-party and pinned by commit SHA. The toolchain
+# comes from rust-toolchain.toml
 # through the runner's preinstalled rustup. Rejected: dtolnay/rust-toolchain,
 # taiki-e/install-action and cache actions, which are third-party
 # dependencies the owner has not agreed to. nextest, cargo-deny and
@@ -160,3 +162,79 @@ jobs:
       # this is the same invocation as the local proof.
       - name: Check crate boundaries
         run: python3 .github/scripts/check-boundaries.py
+
+  # PV-T22-002 (MS-1 plan T22, D-007; spec §17.2): egui_kittest snapshots of
+  # the 16 review states in both themes, 32 tests, from
+  # crates/fuzzy-dedupe-app/tests/snapshots.rs. The only job that needs a GPU
+  # adapter: the `snapshot` feature that builds those tests is enabled here
+  # and nowhere else. Baselines are valid only from this job's pinned image
+  # and its Mesa lavapipe, so the image is a named release, not
+  # ubuntu-latest, and an image or Mesa change means regenerating the
+  # baselines in a reviewed PR. The baseline procedure is in the header of
+  # tests/snapshots.rs.
+  ui-test:
+    runs-on: ubuntu-24.04
+    env:
+      # Vulkan only, so wgpu cannot fall back to a GL adapter whose
+      # rendering the baselines were not made with.
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # mesa-vulkan-drivers carries lavapipe, the CPU Vulkan device that
+      # egui_kittest's adapter choice prefers; libvulkan1 is the loader.
+      - name: Install Mesa lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools
+      # The record EV-006 cites (plan T22.1, T22.6): the image, the Mesa
+      # packages and the Vulkan devices the baselines target.
+      - name: Record the runner image, Mesa version and adapter
+        run: |
+          echo "image: $ImageOS $ImageVersion"
+          dpkg-query --show --showformat='${Package} ${Version}\n' \
+            mesa-vulkan-drivers libvulkan1
+          vulkaninfo --summary
+      # Same asset and digest as the `test` job and the .rexec.toml pin.
+      - name: Install cargo-nextest
+        run: |
+          asset=cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$asset" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/$asset"
+          echo "d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a  $RUNNER_TEMP/$asset" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" cargo-nextest
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # The `clippy` job builds without the feature, so this is the only lint
+      # of tests/snapshots.rs.
+      - name: Run Clippy on the snapshot tests
+        run: cargo clippy -p fuzzy-dedupe-app --features snapshot --tests --locked -- -D warnings
+      # 16 review states x 2 themes (plan Appendix A C-11). Counted by name
+      # before the run, so a lost or doubled frame fails here rather than
+      # passing with fewer snapshots.
+      - name: Count the snapshot tests
+        run: |
+          count=$(cargo nextest list -p fuzzy-dedupe-app --features snapshot --locked \
+            -E 'binary(snapshots) & test(/::(light|dark)$/)' --message-format oneline | wc -l)
+          echo "snapshot tests: $count"
+          test "$count" -eq 32
+      # --no-tests=fail: a run that selects no test fails the job.
+      # --no-fail-fast: every frame runs even after one fails, so the
+      # uploaded artifact holds a new image for each missing or changed
+      # baseline instead of only the first few nextest reached.
+      - name: Run the snapshot tests
+        run: cargo nextest run -p fuzzy-dedupe-app --features snapshot --locked --no-tests=fail --no-fail-fast -E 'binary(snapshots)'
+      # A missing or differing baseline leaves <name>.new.png (and, for a
+      # difference, <name>.diff.png) beside it; they are the candidate
+      # baselines and the evidence of what moved.
+      - name: Upload new and diff images
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-snapshots
+          path: |
+            crates/fuzzy-dedupe-app/tests/snapshots/*.new.png
+            crates/fuzzy-dedupe-app/tests/snapshots/*.diff.png
+          if-no-files-found: warn
