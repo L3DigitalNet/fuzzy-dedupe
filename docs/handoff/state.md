@@ -2,9 +2,9 @@
 
 ## Current focus
 
-- Product decisions and technical recommendations are distinguished in [specs-plans.md](specs-plans.md).
-- Spec v0.9 and the ADR 0001 amendment record all owner decisions; §11 matches the Figma file as of 2026-11-22.
-- MS-0 is complete and closed out (PRs #9, #10; `main` at `b419d7d`); MS-1 is active, not started, and begins when the owner asks.
-- Keep plan task branches until each plan's close-out: `recover` finds checkpoints with `git log --all`.
+- MS-1: T1-T24, T29-T43 done; T25-T28 need the owner. Spec v0.13. See [specs-plans.md](specs-plans.md).
+- T25 (owner's go, idle machine): rebuild release, 100% scale, pick power profile, `performance/run.sh --go`, `analyze.py`.
+- T26: `docs/evidence/ms-1/desktop-pass.md` (KDE here, GNOME in owner's VM). T27 sign-off; T28 close-out.
+- Keep all plan task branches and `t40-assemble` until T28; `recover` reads them via `git log --all`.
 
 ## Active incidents
