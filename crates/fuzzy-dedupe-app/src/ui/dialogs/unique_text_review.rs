@@ -6,9 +6,10 @@
 //! creating removal intent (§11.4, C-05 I-5).
 //!
 //! The dialog host (`ui/widgets/dialog_host.rs`) owns the title row, the close
-//! control, Esc, Enter, sizing and focus restoration; this file draws the body
-//! and footer inside the 16-unit content inset. Enter runs Queue for cleanup,
-//! which queues nothing without the acknowledgment.
+//! control, Esc, Enter, sizing, focus restoration and the pinned footer slot;
+//! this file draws the body and the footer inside the 16-unit content inset.
+//! Enter runs Queue for cleanup, which queues nothing without the
+//! acknowledgment.
 //!
 //! The pair is the popup's `UniqueTextSubject`: scan, target, counterpart,
 //! both snapshots and the rules revision the review binds to. The unique
@@ -37,7 +38,7 @@ use fuzzy_dedupe_engine::service::{EngineRequest, ReviewCommand};
 
 use crate::presentation::commands::UiIntent;
 use crate::presentation::state::{CompareState, DialogSubject, UniqueTextSubject};
-use crate::ui::dialogs::queue_identical::{current_reference, footer, icon, text};
+use crate::ui::dialogs::queue_identical::{current_reference, footer_row, icon, text};
 use crate::ui::dialogs::{DialogCx, DialogResponse};
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host;
@@ -96,6 +97,9 @@ pub struct Draft {
     /// popup draws (the host consumes it first), so its focus move waits for
     /// the checkbox to exist this frame.
     focus_checkbox: bool,
+    /// The checkbox's ID as [`show`] last drew it, for [`footer`]'s focus
+    /// move: the footer is drawn after the body, outside it.
+    checkbox: Option<Id>,
 }
 
 fn subject(cx: &DialogCx<'_>) -> Option<UniqueTextSubject> {
@@ -151,14 +155,13 @@ fn current(cx: &DialogCx<'_>, subject: &UniqueTextSubject) -> bool {
             .is_some_and(|view| view.rules == subject.rules && view.scan == subject.scan)
 }
 
-/// Draws the body and footer. Returns [`DialogResponse::Close`] when a
-/// footer action closed the popup.
+/// Draws the body; [`footer`] draws Cancel and Queue for cleanup. Returns
+/// [`DialogResponse::Close`] when Open comparison closed the popup.
 pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
     let Some(subject) = subject(cx) else {
         return DialogResponse::Close;
     };
-    let ctx = ui.ctx().clone();
-    let palette = theme::palette(dialog_host::mode_of(&ctx));
+    let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
     let mut response = DialogResponse::KeepOpen;
     ui.spacing_mut().item_spacing = Vec2::new(8.0, 12.0);
 
@@ -240,21 +243,33 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
         Token::Muted,
     ));
 
-    let checkbox = acknowledgment(ui, palette, draft);
+    draft.checkbox = Some(acknowledgment(ui, palette, draft));
     if draft.prompt && !draft.acknowledged {
         notice(ui, palette, PROMPT);
     } else if let Some(blocked) = draft.blocked {
         notice(ui, palette, blocked.message());
     }
+    response
+}
 
-    if footer(ui, palette, "Queue for cleanup", false, true, &mut response) {
+/// Cancel, then Queue for cleanup, in the footer slot the dialog host pins
+/// below the body. Returns [`DialogResponse::Close`] when either closed the
+/// popup.
+pub fn footer(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let ctx = ui.ctx().clone();
+    let palette = theme::palette(dialog_host::mode_of(&ctx));
+    let mut response = DialogResponse::KeepOpen;
+    if footer_row(ui, palette, "Queue for cleanup", false, true, &mut response) {
         response = submit(draft, cx);
     }
 
-    // After the footer, so a click on Queue for cleanup this frame moves
-    // focus too: the checkbox drew earlier in the frame, and its ID is
-    // stable, so the request lands on it now rather than a frame later.
-    if std::mem::take(&mut draft.focus_checkbox) {
+    // After the footer's buttons, so a click on Queue for cleanup this frame
+    // moves focus too: the checkbox drew earlier in the frame, in the body,
+    // and its ID is stable, so the request lands on it now rather than a
+    // frame later.
+    if std::mem::take(&mut draft.focus_checkbox)
+        && let Some(checkbox) = draft.checkbox
+    {
         ctx.memory_mut(|memory| memory.request_focus(checkbox));
         ctx.request_repaint();
     }

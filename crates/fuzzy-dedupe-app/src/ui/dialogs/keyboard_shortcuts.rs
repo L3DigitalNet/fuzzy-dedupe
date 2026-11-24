@@ -18,8 +18,9 @@
 //! as a label plus a run of cap labels.
 //!
 //! The dialog host (`ui/widgets/dialog_host.rs`) owns the title row, the close
-//! control, Esc, Enter, sizing and focus restoration; this file draws the body
-//! and footer inside the 16-unit content inset. Enter dismisses it, like Close.
+//! control, Esc, Enter, sizing, focus restoration and the pinned footer slot;
+//! this file draws the body and the footer inside the 16-unit content inset.
+//! Enter dismisses it, like Close.
 
 use std::sync::Arc;
 
@@ -68,8 +69,8 @@ pub fn open(cx: &mut DialogCx<'_>) -> Draft {
     Draft::default()
 }
 
-/// Draws the map and the footer. Returns [`DialogResponse::Close`] when
-/// Close was pressed.
+/// Draws the map; [`footer`] draws the note and Close. Never closes the
+/// popup.
 pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
     let _ = (draft, cx);
     let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
@@ -96,9 +97,15 @@ pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResp
             });
         }
     });
+    DialogResponse::KeepOpen
+}
 
-    ui.add_space(theme::SPACING_SCALE[3].into());
-    footer(ui, Some(NO_TRASH_NOTE), palette)
+/// The no-Trash note and Close, in the footer slot the dialog host pins
+/// below the map. Returns [`DialogResponse::Close`] when Close was pressed.
+pub fn footer(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let _ = (draft, cx);
+    let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
+    close_footer(ui, Some(NO_TRASH_NOTE), palette)
 }
 
 fn scope_title(scope: ShortcutScope) -> &'static str {
@@ -223,20 +230,17 @@ fn shortcut_row(ui: &mut Ui, row: &ShortcutRow, palette: &Palette) {
     }
 }
 
-/// The popup footer shared by Keyboard shortcuts and About: an optional
-/// supporting note at the left and an 80-wide Close at the right, pushed to
-/// the bottom of the visible popup body when the content is shorter.
+/// The footer row shared by Keyboard shortcuts and About, drawn in the
+/// dialog host's pinned footer slot: an optional supporting note at the
+/// left and an 80-wide Close at the right.
 ///
-/// The host draws every body inside a vertical scroll area, whose content
-/// height is unbounded; the scroll viewport is the clip rectangle, so that
-/// is what "bottom" measures against.
-pub(crate) fn footer(ui: &mut Ui, note: Option<&str>, palette: &Palette) -> DialogResponse {
-    let gap = ui.clip_rect().bottom() - ui.cursor().top() - CONTROL_HEIGHT;
-    if gap > 0.0 {
-        ui.add_space(gap);
-    }
+/// The note's width leaves exactly the spacing token and Close, so the row
+/// sets its own zero item spacing: egui's default spacing after the note
+/// would push Close past the 16-unit content inset.
+pub(crate) fn close_footer(ui: &mut Ui, note: Option<&str>, palette: &Palette) -> DialogResponse {
     let mut response = DialogResponse::KeepOpen;
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         let spacing: f32 = theme::SPACING_SCALE[2].into();
         let note_width = (ui.available_width() - CLOSE_WIDTH - spacing).max(0.0);
         ui.allocate_ui_with_layout(

@@ -5,8 +5,9 @@
 //! bulk queueing path (§11.4).
 //!
 //! The dialog host (`ui/widgets/dialog_host.rs`) owns the title row, the close
-//! control, Esc, Enter, sizing and focus restoration; this file draws the body
-//! and footer inside the 16-unit content inset. Enter runs Queue N files.
+//! control, Esc, Enter, sizing, focus restoration and the pinned footer slot;
+//! this file draws the body and the footer inside the 16-unit content inset.
+//! Enter runs Queue N files.
 //!
 //! The popup states its scope, the rules it applies, and the file count and
 //! size before anything is queued; Queue N files then sends one
@@ -31,7 +32,7 @@
 //! `presentation/state.rs`.
 //!
 //! This file also holds the small pieces both T17 popups draw with
-//! (`current_reference`, the footer, the tinted icon and the text helper);
+//! (`current_reference`, the footer row, the tinted icon and the text helper);
 //! `unique_text_review.rs` imports them, so a change here reaches both.
 
 use std::sync::Arc;
@@ -95,14 +96,12 @@ pub fn open(cx: &mut DialogCx<'_>) -> Draft {
     draft
 }
 
-/// Draws the body and footer. Returns [`DialogResponse::Close`] when a
-/// footer action closed the popup.
+/// Draws the body; [`footer`] draws Cancel and Queue N files. Never closes
+/// the popup.
 pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
-    let ctx = ui.ctx().clone();
-    let palette = theme::palette(dialog_host::mode_of(&ctx));
+    let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
     let cached = refresh(draft, cx);
     let (all, shown) = (&cached.all, &cached.shown);
-    let mut response = DialogResponse::KeepOpen;
 
     ui.spacing_mut().item_spacing = Vec2::new(8.0, 12.0);
     ui.label(
@@ -167,9 +166,22 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
         palette,
         Token::Ink,
     ));
+    DialogResponse::KeepOpen
+}
 
+/// Cancel, then Queue N files for the chosen scope, in the footer slot the
+/// dialog host pins below the body. Returns [`DialogResponse::Close`] when
+/// either closed the popup.
+pub fn footer(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
+    let cached = refresh(draft, cx);
+    let forecast = match draft.choice {
+        ScopeChoice::All => &cached.all,
+        ScopeChoice::Shown => &cached.shown,
+    };
+    let mut response = DialogResponse::KeepOpen;
     let queue_label = format!("Queue {}", files(forecast.files.len()));
-    if footer(
+    if footer_row(
         ui,
         palette,
         &queue_label,
@@ -333,13 +345,20 @@ pub(crate) fn icon(ui: &mut egui::Ui, icon: Icon, color: Color32) {
     }
 }
 
-/// The footer of both T17 popups: Cancel, then the primary action, right
-/// aligned; `filled` draws the primary action in the primary colour, as
-/// `27:1868` does and `16:932` does not. Laid out left to right after a measured gap rather than
-/// right-to-left, so Tab reaches Cancel before the primary action, in
-/// reading order. Returns whether the primary action was pressed; Cancel
-/// sets `response` to close.
-pub(crate) fn footer(
+/// The footer row of both T17 popups: Cancel, then the primary action,
+/// right aligned within the footer slot; `filled` draws the primary action
+/// in the primary colour, as `27:1868` does and `16:932` does not. Returns
+/// whether the primary action was pressed; Cancel sets `response` to close.
+///
+/// Laid out left to right after a measured gap rather than right-to-left,
+/// so Tab reaches Cancel before the primary action, in reading order. The
+/// gap is only right when it matches what egui lays out: the primary button
+/// is at least its text plus 6 units a side, and never narrower than egui's
+/// own button padding makes it, and the 8-unit spacing between the buttons
+/// is set here, not inherited from the caller. A width egui then widens, or
+/// a gap read from whatever spacing the caller left, pushes the primary
+/// button past the 16-unit content inset.
+pub(crate) fn footer_row(
     ui: &mut egui::Ui,
     palette: &Palette,
     primary: &str,
@@ -349,18 +368,20 @@ pub(crate) fn footer(
 ) -> bool {
     const CANCEL_WIDTH: f32 = 80.0;
     const HEIGHT: f32 = 30.0;
+    const GAP: f32 = 8.0;
     const PAD: f32 = 6.0;
     let font = CompactStyle::ControlLabel.font_id();
-    let primary_width = ui
+    let padding = ui.spacing().button_padding.x.max(PAD);
+    let text_width = ui
         .painter()
         .layout_no_wrap(primary.to_owned(), font, Color32::PLACEHOLDER)
         .size()
-        .x
-        + 2.0 * PAD;
+        .x;
+    let primary_width = text_width + 2.0 * padding;
     let mut pressed = false;
     ui.horizontal(|ui| {
-        let gap = ui.spacing().item_spacing.x;
-        ui.add_space((ui.available_width() - CANCEL_WIDTH - gap - primary_width).max(0.0));
+        ui.spacing_mut().item_spacing.x = GAP;
+        ui.add_space((ui.available_width() - CANCEL_WIDTH - GAP - primary_width).max(0.0));
         let cancel = egui::Button::new(text(
             "Cancel",
             CompactStyle::ControlLabel,
