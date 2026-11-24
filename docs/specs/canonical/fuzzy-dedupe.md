@@ -6,7 +6,7 @@ profile: standard
 owner: 'L3DigitalNet'
 implementer: 'Fuzzy DeDupe implementation team'
 created: '2026-11-19'
-last_reviewed: '2026-11-22'
+last_reviewed: '2026-11-24'
 supersedes: null
 superseded_by: null
 related:
@@ -39,6 +39,7 @@ The owner has approved the product name, independent Rust implementation, licens
 | 0.9 | 2026-11-22 | Corrected gaps found while planning MS-0 and MS-1. Defined direct dependency and project-owned source file. Restated the `unsafe` lint split in a form Cargo accepts, and excepted the workspace's own crates from the `cargo deny` license list. Pinned IBM Plex per family, disabled egui's bundled fonts and added an embedded Noto Emoji fallback. Specified the About actions and an opener adapter for folders and web addresses. Stopped storing window position (Wayland does not allow it), refused queuing a queued file's counterpart, and added UI checks 09 to 11 to the MS-1 exit list. Narrowed MS-1 exit item 8 to the user's files and declared the license of the PNG design exports. After an external review, made the reference the default counterpart (owner decision), defined unique lines and the Make this the reference transition, made row labels name their actual counterpart, and separated Failed from Stopped: changed. |
 | 0.10 | 2026-11-22 | Named the approved fontconfig lookup crate in §8.3 (fontconfig 0.11.0, loaded at run time, Linux-only in `fuzzy-dedupe-platform`), replacing the placeholder row. Approved `unicode-normalization` and development-only `proptest` for MS-1. |
 | 0.11 | 2026-11-22 | Approved a direct `winit` dependency of `fuzzy-dedupe-app` in §8.3, used only to enable the Adwaita client-side title bar. |
+| 0.12 | 2026-11-24 | Corrected the §11.9 reference workstation to run Fedora with KDE Plasma on Wayland, the owner's actual desktop. Supported desktops (C-016) are unchanged. |
 
 **Spec lifecycle:** This document is **living until `approved`**, then **change-controlled**: post-approval edits require a new revision row and, for scope-affecting changes, re-approval by the owner. Implementation deviations are recorded in the [Deviations Log](#deviations-log), not silently patched into requirements. When replaced, set `status: superseded` and `superseded_by:` in the frontmatter.
 
@@ -1106,7 +1107,7 @@ A common aligned-row model is preferable to two unrelated text widgets with loos
 
 #### MS-1 performance targets
 
-These targets apply to the MS-1 prototype on fixture data and are separate from the product's resource limits and performance targets (OQ-010). egui must reach them; if one proves unreachable, the owner may change the design or the target (C-015). Measure release builds in the 1600 × 960 client area on the reference workstation: an Intel Core Ultra 7 155H with integrated Intel Arc graphics and 62 GB of memory, running Fedora with GNOME on Wayland. Record the hardware and software for every run. CI does not gate on performance.
+These targets apply to the MS-1 prototype on fixture data and are separate from the product's resource limits and performance targets (OQ-010). egui must reach them; if one proves unreachable, the owner may change the design or the target (C-015). Measure release builds in the 1600 × 960 client area on the reference workstation: an Intel Core Ultra 7 155H with integrated Intel Arc graphics and 62 GB of memory, running Fedora with KDE Plasma on Wayland. Record the hardware and software for every run. CI does not gate on performance.
 
 | ID | Scenario | Target |
 | --- | --- | --- |
