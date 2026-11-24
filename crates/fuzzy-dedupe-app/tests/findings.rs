@@ -34,7 +34,7 @@ mod findings {
         ColumnId, DialogKind, PresentationState, RowId, ScanStage, SortKey, WorkspaceState,
     };
     use fuzzy_dedupe_app::ui::widgets::dialog_host;
-    use fuzzy_dedupe_app::ui::{shell, theme};
+    use fuzzy_dedupe_app::ui::{glyphs, shell, theme};
     use fuzzy_dedupe_domain::{
         ContainmentDirection, FileId, Group, Measurement, MemberRole, QueueOrigin, Refusal,
         RelationKind, ScanProgress, ScanResults,
@@ -231,7 +231,9 @@ mod findings {
             .map(|font| (font.family, egui::FontData::from_owned(font.data)))
             .collect();
         theme::install(&harness.ctx, fallbacks);
-        shell::install_icon_glyphs(&harness.ctx);
+        // This harness builds its context without `FuzzyDedupeApp::new`, so
+        // it installs the glyph registry itself, before its first pass.
+        glyphs::install(&harness.ctx);
         harness.state_mut().ready = true;
         settle(&mut harness);
         harness

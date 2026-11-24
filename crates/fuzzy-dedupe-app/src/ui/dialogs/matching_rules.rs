@@ -30,6 +30,7 @@ use fuzzy_dedupe_domain::{IgnoreOptions, MatchMode, MatchingRules, Permille, Rul
 
 use crate::presentation::commands::UiIntent;
 use crate::ui::dialogs::{DialogCx, DialogResponse};
+use crate::ui::glyphs;
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 
@@ -403,63 +404,6 @@ pub(crate) fn divider(ui: &mut Ui, palette: &Palette) {
 
 // ── The DD/Compact checkbox ──────────────────────────────────────────────
 
-/// Private-use code points for the icons these popups draw as tinted
-/// glyphs, after the shell's `U+E100`–`U+E103` (`ui/shell.rs` `GLYPHS`).
-/// Cross-file contract: no other file may register a different icon on
-/// these code points, or one of the two drawings shows the wrong icon.
-const POPUP_GLYPHS: [(Icon, char); 3] = [
-    (Icon::Check, '\u{E130}'),
-    (Icon::Collapsed, '\u{E131}'),
-    (Icon::Expanded, '\u{E132}'),
-];
-
-/// The glyph standing for `icon`, or `None` on the pass that registers the
-/// popup glyphs. A glyph, not `Icon::image`: Lucide's `currentColor`
-/// rasterizes black and egui's image tint only multiplies, so a white check
-/// on the primary fill needs the tintable glyph route the shell uses (see
-/// the note above the icon table in `theme.rs`).
-///
-/// egui activates a glyph rasterizer only from the next pass, and laying
-/// out a character no font or rasterizer has yet panics in this build, so
-/// the registering pass draws no icon and asks for another frame. An SVG
-/// that fails to parse is logged and its glyph left out.
-pub(crate) fn glyph(ctx: &egui::Context, icon: Icon) -> Option<String> {
-    // The pass that registered them, and the code points that loaded:
-    // every call in that same pass must still draw nothing, not only the
-    // first, and a glyph that failed to load must never be drawn.
-    let key = egui::Id::unique("fd.popup_glyphs");
-    let pass = ctx.cumulative_pass_nr();
-    let Some((registered_at, loaded)) = ctx.data(|data| data.get_temp::<(u64, Vec<char>)>(key))
-    else {
-        let mut loaded = Vec::new();
-        for (icon, ch) in POPUP_GLYPHS {
-            match egui_extras::SvgGlyph::from_bytes(icon.bytes()) {
-                Ok(svg) => {
-                    ctx.add_glyph_rasterizer(
-                        svg.with_color(false)
-                            .with_baseline_offset(-0.2)
-                            .into_rasterizer(ch.to_string()),
-                    );
-                    loaded.push(ch);
-                }
-                Err(err) => {
-                    tracing::warn!(icon = icon.lucide_name(), %err, "icon glyph not loaded");
-                }
-            }
-        }
-        ctx.data_mut(|data| data.insert_temp(key, (pass, loaded)));
-        ctx.request_repaint();
-        return None;
-    };
-    if registered_at == pass {
-        return None;
-    }
-    POPUP_GLYPHS
-        .iter()
-        .find(|(candidate, ch)| *candidate == icon && loaded.contains(ch))
-        .map(|(_, ch)| ch.to_string())
-}
-
 /// The `DD/Compact/Queue checkbox` (`13:562`/`13:563`) with an optional
 /// visible label to its right, 26 units high as in `16:769`. The caller
 /// toggles its own value on `clicked()`; keyboard activation (Space,
@@ -519,7 +463,9 @@ pub(crate) fn check_box(
             Stroke::new(theme::BORDER_WIDTH, fade(palette.color(border))),
             egui::StrokeKind::Inside,
         );
-        if on && let Some(check) = glyph(ui.ctx(), Icon::Check) {
+        // A glyph, so the check takes the white token on the primary fill
+        // (`ui/glyphs.rs`).
+        if on && let Some(check) = glyphs::text(ui.ctx(), Icon::Check) {
             painter.text(
                 square.center(),
                 egui::Align2::CENTER_CENTER,

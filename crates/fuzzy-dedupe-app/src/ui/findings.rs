@@ -38,10 +38,11 @@ use crate::presentation::state::{
     DialogKind, DialogSubject, MenuKind, RowId, ScanStage, UniqueTextSubject,
 };
 use crate::ui::WorkspaceCx;
+use crate::ui::glyphs;
 use crate::ui::shell::{CONTROL_HEIGHT, GAP};
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
-use crate::ui::widgets::grouped_table::{self, icon_text};
+use crate::ui::widgets::grouped_table;
 
 /// The search field's width (spec §11.3).
 pub const SEARCH_WIDTH: f32 = 340.0;
@@ -242,7 +243,7 @@ fn search_field(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, palette: &Palette) {
         ui.add_sized(
             [24.0, CONTROL_HEIGHT],
             egui::Label::new(
-                egui::RichText::new(icon_text(ui.ctx(), Icon::Search))
+                egui::RichText::new(glyphs::text(ui.ctx(), Icon::Search).unwrap_or_default())
                     .color(palette.color(Token::Muted)),
             ),
         );
@@ -259,13 +260,15 @@ fn search_field(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, palette: &Palette) {
 /// The workspace's own toolbar items, before the shared ones.
 pub fn toolbar(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
     sync_menu(ui, cx);
-    grouped_table::ensure_glyphs(ui.ctx());
     let palette = theme::palette(mode_of(ui.ctx()));
 
     search_field(ui, cx, palette);
 
     let has_results = cx.scan.results.is_some();
-    let actions_text = format!("Actions {}", icon_text(ui.ctx(), Icon::Expanded));
+    let actions_text = format!(
+        "Actions {}",
+        glyphs::text(ui.ctx(), Icon::Expanded).unwrap_or_default()
+    );
     let actions = button(
         ui,
         &actions_text,
@@ -376,7 +379,6 @@ fn adopt_preferences(ctx: &egui::Context, cx: &mut WorkspaceCx<'_>) {
 pub fn show(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
     adopt_preferences(ui.ctx(), cx);
     sync_menu(ui, cx);
-    grouped_table::ensure_glyphs(ui.ctx());
     let palette = theme::palette(mode_of(ui.ctx()));
     cx.findings.last_compared = cx.compare.pair.map(|pair| pair.group);
     let projection = grouped_table::refresh_projection(cx.findings, cx.scan, cx.queue);
@@ -556,7 +558,7 @@ fn filter_row(
                     ui.label(
                         egui::RichText::new(format!(
                             "{} {} {files} could not be read",
-                            icon_text(ui.ctx(), Icon::Alert),
+                            glyphs::text(ui.ctx(), Icon::Alert).unwrap_or_default(),
                             projections::thousands(issues as u64)
                         ))
                         .text_style(CompactStyle::Supporting.text_style())
@@ -872,7 +874,7 @@ fn sort_menu(
 ) {
     for (key, label) in SORT_ITEMS {
         let current = cx.findings.sort == key;
-        let hint = current.then(|| icon_text(ui.ctx(), Icon::Check));
+        let hint = current.then(|| glyphs::text(ui.ctx(), Icon::Check).unwrap_or_default());
         let item = menu_item(ui, label, hint.as_deref(), true, palette);
         focus_first(&item);
         if item.clicked() {

@@ -79,12 +79,12 @@ use crate::presentation::projections::{self, CompareView, PaneIdentity};
 use crate::presentation::state::{
     CompareState, DialogKind, DialogSubject, MenuKind, UniqueTextSubject, WorkspaceState,
 };
-use crate::ui::WorkspaceCx;
 use crate::ui::dialogs::matching_rules::check_box;
 use crate::ui::shell::{CONTROL_HEIGHT, GAP};
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 use crate::ui::widgets::diff_view;
+use crate::ui::{WorkspaceCx, glyphs};
 
 /// Accessible names and visible strings of Compare's controls (spec §11.5,
 /// frame `13:1304`).
@@ -138,62 +138,10 @@ const fn letter(b: bool) -> &'static str {
     if b { "B" } else { "A" }
 }
 
-// ── Icon glyphs (moved to one registry by T34) ───────────────────────────
-
-// Private-use code points for the icons Compare draws as tinted text
-// glyphs. Cross-file contract: the shell holds U+E100–U+E103,
-// `grouped_table` U+E110–U+E116, `matching_rules` U+E130–U+E132 and
-// `queue_identical` U+E170–U+E171; egui keys a glyph rasterizer by its
-// text, so a code point registered twice draws whichever icon came last.
-const GLYPHS: [(Icon, char); 2] = [(Icon::Document, '\u{E150}'), (Icon::Expanded, '\u{E151}')];
-
-fn glyphs_flag() -> Id {
-    Id::unique("fd.compare.glyphs")
-}
-
-/// Registers Compare's glyphs once per context. A glyph is usable only from
-/// the next pass, and laying out a code point no font or rasterizer draws
-/// panics, so [`glyph_text`] draws nothing until then. An SVG that fails
-/// to parse is logged and never drawn.
-fn ensure_glyphs(ctx: &egui::Context) {
-    if ctx
-        .data(|d| d.get_temp::<(u64, Vec<char>)>(glyphs_flag()))
-        .is_some()
-    {
-        return;
-    }
-    let mut loaded = Vec::new();
-    for (icon, ch) in GLYPHS {
-        match egui_extras::SvgGlyph::from_bytes(icon.bytes()) {
-            Ok(svg) => {
-                ctx.add_glyph_rasterizer(
-                    svg.with_color(false)
-                        .with_baseline_offset(-0.2)
-                        .into_rasterizer(ch.to_string()),
-                );
-                loaded.push(ch);
-            }
-            Err(err) => tracing::warn!(icon = icon.lucide_name(), %err, "icon glyph not loaded"),
-        }
-    }
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(glyphs_flag(), (pass, loaded)));
-    ctx.request_repaint();
-}
-
-/// `icon` as text in the current text colour, or "" while it is not usable.
+/// `icon` as text in the current text colour, or "" when the glyph
+/// registry cannot draw it on `ctx` (see [`glyphs::text`]).
 fn glyph_text(ctx: &egui::Context, icon: Icon) -> String {
-    let Some((pass, loaded)) = ctx.data(|d| d.get_temp::<(u64, Vec<char>)>(glyphs_flag())) else {
-        return String::new();
-    };
-    if ctx.cumulative_pass_nr() <= pass {
-        return String::new();
-    }
-    GLYPHS
-        .iter()
-        .find(|(candidate, ch)| *candidate == icon && loaded.contains(ch))
-        .map(|(_, ch)| ch.to_string())
-        .unwrap_or_default()
+    glyphs::text(ctx, icon).unwrap_or_default()
 }
 
 // ── Pair, evidence and keys ──────────────────────────────────────────────
@@ -457,7 +405,6 @@ fn only_in_id(b: bool) -> Id {
 /// the group label and pair, the candidate stepper, Keep both and Queue B
 /// for cleanup….
 pub fn toolbar(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
-    ensure_glyphs(ui.ctx());
     adopt_preferences(ui.ctx(), cx);
     pin(cx.compare);
     let palette = theme::palette(mode_of(ui.ctx()));
@@ -592,7 +539,6 @@ fn leading(
 /// The workspace body below the toolbar: evidence row, change row, the
 /// pinned file identities and the panes; or the no-pair explanation.
 pub fn show(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQueue) {
-    ensure_glyphs(ui.ctx());
     pin(cx.compare);
     keys(ui, cx, intents);
     let palette = theme::palette(mode_of(ui.ctx()));

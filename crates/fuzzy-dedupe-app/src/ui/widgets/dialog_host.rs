@@ -10,17 +10,19 @@
 //! nothing; a popup never opens over another (spec §11.6).
 //!
 //! For the open popup, [`show`] draws the title, a reachable close control
-//! and the popup's own body (`ui/dialogs/*.rs`) inside a modal at the
-//! popup's reference size, shrunk to the usable viewport. Esc cancels and
-//! Enter runs the popup's non-destructive default; both are consumed here
-//! before the popup's widgets see them. Closing in any way puts focus back
+//! and the popup's own body (`ui/dialogs/*.rs`) inside a modal at the size
+//! the popup's size hook gives (`DialogDraft::size`, its reference size
+//! unless the popup overrides it), shrunk to the usable viewport; a popup
+//! with a pinned footer gets it drawn below a body that scrolls. Esc
+//! cancels and Enter runs the popup's non-destructive default; both are
+//! consumed here before the popup's widgets see them. Closing in any way puts focus back
 //! on the invoker on the next frame ([`begin_frame`]).
 //!
 //! Frame order contract with `app.rs`: [`begin_frame`] runs before anything
 //! draws, the shell and workspace draw next, and [`show`] runs last, so the
 //! modal layer sits above the workspace it blocks.
 
-use egui::{Context, Id, Key, Modifiers, Stroke, Vec2};
+use egui::{Context, Id, Key, Modifiers, Rect, Sense, Stroke, Vec2};
 
 use crate::presentation::commands::IntentQueue;
 use crate::presentation::state::{
@@ -223,14 +225,26 @@ pub fn show(ctx: &Context, state: &mut PresentationState, intents: &mut IntentQu
     }
 }
 
-/// The popup's size: its reference size, shrunk to the viewport minus the
-/// content inset on each side so the action footer stays reachable.
+/// The size popup `kind` opens at with no size of its own: its reference
+/// size, constrained as [`constrained_size`] says.
 #[must_use]
 pub fn popup_size(ctx: &Context, kind: DialogKind) -> Vec2 {
-    let [width, height] = kind.reference_size();
+    constrained_size(ctx, kind.reference_size())
+}
+
+/// `size`, shrunk to the viewport minus the content inset on each side, so
+/// the whole popup and its action footer stay on screen (REQ-032). Content
+/// that no longer fits scrolls inside the popup.
+#[must_use]
+pub fn constrained_size(ctx: &Context, [width, height]: [f32; 2]) -> Vec2 {
     let room = ctx.content_rect().size() - Vec2::splat(2.0 * CONTENT_INSET);
     Vec2::new(width.min(room.x), height.min(room.y)).max(Vec2::ZERO)
 }
+
+/// The pinned footer slot's height, one control row (spec §11.3), and its
+/// gap below the scrolling body (frame `36:2435`).
+pub const FOOTER_HEIGHT: f32 = 30.0;
+const FOOTER_GAP: f32 = 12.0;
 
 fn draw(
     ctx: &Context,
@@ -240,10 +254,11 @@ fn draw(
     cx: &mut DialogCx<'_>,
     focus_entry: bool,
 ) -> DialogResponse {
-    // The frame's 1-unit border is drawn outside its fill, so the content is
-    // the reference size less both borders; the painted popup is then
-    // exactly the reference size.
-    let size = popup_size(ctx, kind) - Vec2::splat(2.0 * theme::BORDER_WIDTH);
+    // The size comes from the popup's size hook each frame, so a popup that
+    // grows (New scan expanding its matching rules) resizes in place. The
+    // frame's 1-unit border is drawn outside its fill, so the content is
+    // that size less both borders; the painted popup is then exactly it.
+    let size = constrained_size(ctx, draft.size(kind)) - Vec2::splat(2.0 * theme::BORDER_WIDTH);
     let palette = theme::palette(mode_of(ctx));
     let frame = egui::Frame::new()
         .fill(palette.color(Token::Surface))
@@ -253,13 +268,21 @@ fn draw(
     let modal = egui::Modal::new(Id::unique(("fd.dialog", kind))).frame(frame);
     modal
         .show(ctx, |ui| {
-            ui.set_min_size(size);
-            ui.set_max_size(size);
+            // Exactly `size`, whatever the content asks for: the popup draws
+            // into a child of this allocation, and a child never grows its
+            // parent. `set_min_size` with `set_max_size` alone let a body a
+            // few units too wide widen the whole popup past its size.
+            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+            ui.shrink_clip_rect(rect);
+            let ui = &mut ui;
             let mut response = DialogResponse::KeepOpen;
             egui::Frame::new()
                 .inner_margin(CONTENT_INSET)
                 .show(ui, |ui| {
-                    ui.set_min_size(size - Vec2::splat(2.0 * CONTENT_INSET));
+                    let inner = size - Vec2::splat(2.0 * CONTENT_INSET);
+                    let content = Rect::from_min_size(ui.cursor().min, inner);
+                    ui.set_min_size(inner);
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(draft.title(kind, cx))
@@ -284,13 +307,37 @@ fn draw(
                     for message in validation {
                         ui.colored_label(palette.color(Token::Red), message);
                     }
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            if draft.show(ui, cx) == DialogResponse::Close {
-                                response = DialogResponse::Close;
-                            }
-                        });
+
+                    // A pinned footer sits at the foot of the content area
+                    // and the body scrolls in the space above it, so the
+                    // footer stays visible and reachable however small the
+                    // viewport makes the popup (spec §11.6). The body is
+                    // drawn first, so Tab still reaches the footer last.
+                    let pinned = draft.has_pinned_footer();
+                    let footer = Rect::from_min_max(
+                        egui::pos2(content.left(), content.bottom() - FOOTER_HEIGHT),
+                        content.max,
+                    );
+                    let mut body = egui::ScrollArea::vertical().auto_shrink([false, false]);
+                    if pinned {
+                        body = body
+                            .max_height((footer.top() - FOOTER_GAP - ui.cursor().top()).max(0.0));
+                    }
+                    body.show(ui, |ui| {
+                        if draft.show(ui, cx) == DialogResponse::Close {
+                            response = DialogResponse::Close;
+                        }
+                    });
+                    if pinned {
+                        let closed = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(footer), |ui| {
+                                draft.footer(ui, cx)
+                            })
+                            .inner;
+                        if closed == DialogResponse::Close {
+                            response = DialogResponse::Close;
+                        }
+                    }
                 });
             response
         })

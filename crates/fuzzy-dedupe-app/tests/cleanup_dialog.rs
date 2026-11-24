@@ -37,8 +37,8 @@ mod cleanup_dialog {
     use fuzzy_dedupe_app::presentation::state::{
         CleanupPhase, DialogKind, DialogSubject, PresentationState, ScanStage,
     };
-    use fuzzy_dedupe_app::ui::theme;
     use fuzzy_dedupe_app::ui::widgets::dialog_host;
+    use fuzzy_dedupe_app::ui::{glyphs, theme};
     use fuzzy_dedupe_domain::{
         EvidenceUpdate, FileId, PlanItemStatus, PlanRevision, QueueOrigin, SnapshotId,
     };
@@ -354,6 +354,7 @@ mod cleanup_dialog {
             .with_max_steps(max_steps)
             .build_ui_state(|ui, rig: &mut Rig| rig.frame(ui), rig);
         theme::install(&harness.ctx, Vec::new());
+        glyphs::install(&harness.ctx);
         harness.state_mut().ready = true;
         harness.run();
         harness

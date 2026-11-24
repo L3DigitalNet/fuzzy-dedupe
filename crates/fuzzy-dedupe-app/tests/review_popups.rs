@@ -40,8 +40,8 @@ mod review_popups {
         DialogKind, DialogSubject, PresentationState, QueueEntry, QueueState, ScanStage,
         UniqueTextSubject, WorkspaceState,
     };
-    use fuzzy_dedupe_app::ui::theme;
     use fuzzy_dedupe_app::ui::widgets::dialog_host;
+    use fuzzy_dedupe_app::ui::{glyphs, theme};
     use fuzzy_dedupe_domain::{
         CompareMode, EvidenceUpdate, FileId, Group, IgnoreOptions, Measurement, MemberRole,
         QueueOrigin, QueueScope, RequestId, ScanResults, SnapshotId, Verification,
@@ -798,6 +798,9 @@ mod review_popups {
                 },
             );
         theme::install(&harness.ctx, Vec::new());
+        // Built without `FuzzyDedupeApp::new`, so the registry is installed
+        // here, before the first pass, as the app installs it.
+        glyphs::install(&harness.ctx);
         harness
     }
 

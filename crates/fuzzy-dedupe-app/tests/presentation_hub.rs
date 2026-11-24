@@ -55,8 +55,8 @@ mod presentation_hub {
             Severity,
         };
         use fuzzy_dedupe_app::ui::dialogs::queue_identical;
-        use fuzzy_dedupe_app::ui::theme;
         use fuzzy_dedupe_app::ui::widgets::dialog_host;
+        use fuzzy_dedupe_app::ui::{glyphs, theme};
         use fuzzy_dedupe_domain::{
             CompareMode, FileId, Group, Measurement, MemberDecision, MemberRole, QueueOrigin,
             QueueScope, RequestId, ReviewedPair, ScanId, ScanResults, ValidationView, Verification,
@@ -752,6 +752,7 @@ mod presentation_hub {
                     },
                 );
             theme::install(&harness.ctx, Vec::new());
+            glyphs::install(&harness.ctx);
             let mut intents = IntentQueue::default();
             dialog_host::open(
                 &mut harness.state_mut().state,
@@ -1025,7 +1026,7 @@ mod presentation_hub {
         };
         use fuzzy_dedupe_app::ui::findings::{actions_button_id, sort_button_id};
         use fuzzy_dedupe_app::ui::widgets::dialog_host;
-        use fuzzy_dedupe_app::ui::{shell, theme};
+        use fuzzy_dedupe_app::ui::{glyphs, shell, theme};
         use fuzzy_dedupe_engine::fixtures::{ScenarioKind, design};
         use fuzzy_dedupe_engine::service::{Engine, EngineConfig};
         use fuzzy_dedupe_platform::dirs::AppDirs;
@@ -1119,7 +1120,7 @@ mod presentation_hub {
                 .with_size(size)
                 .build_ui_state(|ui, rig: &mut Rig| rig.frame(ui), rig);
             theme::install(&harness.ctx, Vec::new());
-            shell::install_icon_glyphs(&harness.ctx);
+            glyphs::install(&harness.ctx);
             harness.state_mut().ready = true;
             settle(&mut harness);
             harness

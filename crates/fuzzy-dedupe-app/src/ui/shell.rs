@@ -30,7 +30,7 @@ use crate::presentation::state::{
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 use crate::ui::widgets::status;
-use crate::ui::{WorkspaceCx, compare, findings};
+use crate::ui::{WorkspaceCx, compare, findings, glyphs};
 
 /// Rail width, expanded and collapsed (spec §11.3).
 pub const RAIL_WIDTH: f32 = 152.0;
@@ -82,40 +82,6 @@ pub fn rail_width(window_width: f32, user_collapsed: bool) -> f32 {
         RAIL_COLLAPSED_WIDTH
     } else {
         RAIL_WIDTH
-    }
-}
-
-// Private-use code points that draw the rail and toolbar icons as text
-// glyphs, so they take the text colour of the current theme. `Icon::image`
-// cannot be tinted: Lucide's `currentColor` rasterizes black and egui's
-// image tint multiplies (see the note above the icon table in theme.rs).
-const GLYPHS: [(Icon, char); 4] = [
-    (Icon::Findings, '\u{E100}'),
-    (Icon::Compare, '\u{E101}'),
-    (Icon::Menu, '\u{E102}'),
-    (Icon::Settings, '\u{E103}'),
-];
-
-fn glyph(icon: Icon) -> char {
-    GLYPHS
-        .iter()
-        .find(|(candidate, _)| *candidate == icon)
-        .map_or('\u{FFFD}', |(_, ch)| *ch)
-}
-
-/// Registers the shell's icon glyphs; safe to call more than once. An icon
-/// whose SVG fails to parse is logged and drawn as nothing rather than
-/// stopping startup.
-pub fn install_icon_glyphs(ctx: &egui::Context) {
-    for (icon, ch) in GLYPHS {
-        match egui_extras::SvgGlyph::from_bytes(icon.bytes()) {
-            Ok(svg) => ctx.add_glyph_rasterizer(
-                svg.with_color(false)
-                    .with_baseline_offset(-0.2)
-                    .into_rasterizer(ch.to_string()),
-            ),
-            Err(err) => tracing::warn!(icon = icon.lucide_name(), %err, "icon glyph not loaded"),
-        }
     }
 }
 
@@ -367,13 +333,17 @@ fn rail_control(
     match icon {
         Some(icon) => {
             let icon_pos = egui::pos2(rect.left() + RAIL_PAD + ICON_SIZE / 2.0, rect.center().y);
-            painter.text(
-                icon_pos,
-                Align2::CENTER_CENTER,
-                glyph(icon),
-                FontId::new(ICON_SIZE, font.family.clone()),
-                ink,
-            );
+            // Rail and toolbar icons are text glyphs so they take the
+            // theme's ink; `Icon::image` cannot be tinted (`ui/glyphs.rs`).
+            if let Some(glyph) = glyphs::text(ui.ctx(), icon) {
+                painter.text(
+                    icon_pos,
+                    Align2::CENTER_CENTER,
+                    glyph,
+                    FontId::new(ICON_SIZE, font.family.clone()),
+                    ink,
+                );
+            }
             if !text.is_empty() {
                 painter.text(
                     egui::pos2(
@@ -397,8 +367,11 @@ fn rail_control(
 /// Review cleanup (N) and the Settings gear, right to left.
 fn shared_toolbar_items(ui: &mut Ui, label: &str, intents: &mut IntentQueue, palette: &Palette) {
     let settings = ui.add(
-        egui::Button::new(egui::RichText::new(glyph(Icon::Settings).to_string()).size(ICON_SIZE))
-            .min_size(Vec2::splat(CONTROL_HEIGHT)),
+        egui::Button::new(
+            egui::RichText::new(glyphs::text(ui.ctx(), Icon::Settings).unwrap_or_default())
+                .size(ICON_SIZE),
+        )
+        .min_size(Vec2::splat(CONTROL_HEIGHT)),
     );
     settings.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, SETTINGS_NAME));
     let settings = settings.on_hover_text("Matching rules (Ctrl+,)");

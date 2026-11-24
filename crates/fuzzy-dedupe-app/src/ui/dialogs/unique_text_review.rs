@@ -37,7 +37,7 @@ use fuzzy_dedupe_engine::service::{EngineRequest, ReviewCommand};
 
 use crate::presentation::commands::UiIntent;
 use crate::presentation::state::{CompareState, DialogSubject, UniqueTextSubject};
-use crate::ui::dialogs::queue_identical::{ALERT_GLYPH, current_reference, footer, icon, text};
+use crate::ui::dialogs::queue_identical::{current_reference, footer, icon, text};
 use crate::ui::dialogs::{DialogCx, DialogResponse};
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host;
@@ -512,7 +512,7 @@ fn acknowledgment(ui: &mut egui::Ui, palette: &Palette, draft: &mut Draft) -> Id
 fn notice(ui: &mut egui::Ui, palette: &Palette, message: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        icon(ui, Icon::Alert, ALERT_GLYPH, palette.color(Token::Red));
+        icon(ui, Icon::Alert, palette.color(Token::Red));
         ui.label(text(message, CompactStyle::Supporting, palette, Token::Red));
     });
 }
