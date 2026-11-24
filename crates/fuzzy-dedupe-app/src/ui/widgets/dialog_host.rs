@@ -15,8 +15,11 @@
 //! unless the popup overrides it), shrunk to the usable viewport. Every
 //! popup's action footer (`DialogDraft::footer`) is drawn in one slot pinned
 //! to the foot of the content inset, below a body that scrolls in the space
-//! above it. Esc cancels and Enter runs the popup's non-destructive default;
-//! both are consumed here before the popup's widgets see them. Closing in
+//! above it. A body control that gains keyboard focus, by Tab or moved
+//! there by its popup, is scrolled into the body's visible clip
+//! (`reveal_focused`). Esc cancels and Enter runs the popup's
+//! non-destructive default; both are consumed here before the popup's
+//! widgets see them. Closing in
 //! any way puts focus back on the invoker on the next frame
 //! ([`begin_frame`]).
 //!
@@ -249,7 +252,10 @@ pub fn constrained_size(ctx: &Context, [width, height]: [f32; 2]) -> Vec2 {
 /// single line at the popup's narrowest width (960 wide, or the 992 a
 /// 1024-wide window leaves, so the note has over 800 units).
 pub const FOOTER_HEIGHT: f32 = 30.0;
-const FOOTER_GAP: f32 = 12.0;
+/// The gap between the body's scroll area and the pinned footer slot. The
+/// body's visible clip ends this far above the slot, so a body control in
+/// the gap is already clipped (PV-T38-001 measures against it).
+pub const FOOTER_GAP: f32 = 12.0;
 
 fn draw(
     ctx: &Context,
@@ -334,6 +340,11 @@ fn draw(
                             if draft.show(ui, cx) == DialogResponse::Close {
                                 response = DialogResponse::Close;
                             }
+                            // ORDER: after the body draws, inside the scroll
+                            // area, so this pass holds the focused control's
+                            // rect and the scroll target reaches this area
+                            // rather than a nested one that already ended.
+                            reveal_focused(ui);
                         });
                     let closed = ui
                         .scope_builder(egui::UiBuilder::new().max_rect(footer), |ui| {
@@ -347,6 +358,65 @@ fn draw(
             response
         })
         .inner
+}
+
+/// Where the host remembers the focused widget it last revealed, so it
+/// reveals each arrival of focus once.
+fn revealed_key() -> Id {
+    Id::unique("fd.dialog.revealed_focus")
+}
+
+/// Asks the host to scroll the focused body control into view on the next
+/// body draw even though focus has not moved, as when a popup moves focus
+/// to the control that already has it (Review unique text's checkbox,
+/// focused, then scrolled away, on a second unacknowledged Queue for
+/// cleanup). A focus move to a different control needs no call.
+pub fn reveal_focus(ctx: &Context) {
+    ctx.data_mut(|data| data.remove::<Option<Id>>(revealed_key()));
+}
+
+/// Scrolls the host's body so the focused body control lies inside its
+/// visible clip (REQ-032, NFR-005). Runs inside the body's scroll area,
+/// after the body drew.
+///
+/// egui 0.37 never does this itself: a scroll target is set only by
+/// `scroll_to_me`, `scroll_to_rect` or an accesskit `ScrollIntoView`, not by
+/// Tab or `request_focus`. Without it a control below the clip, such as
+/// Review unique text's checkbox under the pinned footer band, takes focus
+/// out of sight and out of the pointer's reach (T22).
+///
+/// It reveals once per arrival of focus and then leaves the scroll offset
+/// alone; re-scrolling every frame would snap the body back under a user
+/// who scrolls away from the focused control with the wheel.
+///
+/// SCOPE: only a control clipped by this body's clip and nothing else. The
+/// title-row × and the footer controls lie outside the clip unclipped by it,
+/// and a control inside a nested scroll area (About's license text) is
+/// clipped by that area too; both fail the `interact_rect` test below, so
+/// the body never scrolls toward a footer control, and a nested area keeps
+/// its own scrolling.
+fn reveal_focused(ui: &egui::Ui) {
+    let ctx = ui.ctx();
+    let focused = ctx.memory(egui::Memory::focused);
+    let key = revealed_key();
+    if ctx.data(|data| data.get_temp::<Option<Id>>(key)) == Some(focused) {
+        return;
+    }
+    ctx.data_mut(|data| data.insert_temp(key, focused));
+    let Some(widget) = focused.and_then(|id| ctx.read_response(id)) else {
+        return;
+    };
+    let clip = ui.clip_rect();
+    // egui records a widget's interact rect as its rect cut to the clip of
+    // the Ui that drew it, so equality says exactly this clip, and no inner
+    // one, cut it. A widget outside the body is not cut by it at all.
+    let cut_by_body =
+        widget.layer_id == ui.layer_id() && widget.interact_rect == widget.rect.intersect(clip);
+    if cut_by_body && !clip.contains_rect(widget.rect) {
+        // No animation: the focus ring must be in view on the frame focus
+        // lands, not after the scroll catches up.
+        ui.scroll_to_rect_animation(widget.rect, None, egui::style::ScrollAnimation::none());
+    }
 }
 
 /// The palette mode egui is drawing this frame in.
