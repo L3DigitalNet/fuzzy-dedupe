@@ -35,7 +35,7 @@ Exit item 6 in §19 of the spec (REQ-006, PV-T26-001): on GNOME and on KDE Plasm
 
 PV-T26-002 (REQ-018, UI check 13, NFR-005, C-016): every action was reached by keyboard with visible focus, focus restoration held after each popup, and long and Unicode paths stayed fully accessible through details and copy.
 
-A row passes only when you saw it hold in the build named above. Write `pass`, `fail`, or `n/a` followed by the reason. Two more results exist: `blocked` for a row the app does not let you reach, and `deviation` for a row you did differently on the virtual machine. A row you could not exercise as written is not `n/a`: write what you did instead in its notes, and for the GNOME virtual machine use [the deviations table](#gnome-rows-the-virtual-machine-cannot-exercise-faithfully). A missing environment blocks T26; it does not shrink the checklist.
+A row passes only when you saw it hold in the build named above. Write `pass`, `fail`, or `n/a` followed by the reason. Two more results exist: `blocked` for a row the app does not let you reach (for example, a launch route that does not work), and `deviation` for a row you did differently on the virtual machine. A row you could not exercise as written is not `n/a`: write what you did instead in its notes, and for the GNOME virtual machine use [the deviations table](#gnome-rows-the-virtual-machine-cannot-exercise-faithfully). A missing environment blocks T26; it does not shrink the checklist.
 
 ## Run conditions
 
@@ -73,18 +73,31 @@ target/release/fuzzy-dedupe
 
 The binary is `fuzzy-dedupe` (`crates/fuzzy-dedupe-app/Cargo.toml`). Record in Provenance if you use a different profile.
 
-**Only the `design` scenario is reachable.** The binary parses no command-line arguments. Its one startup switch is the environment variable `FUZZY_DEDUPE_MEASURE`, read by `crates/fuzzy-dedupe-app/src/measure/mod.rs` (`startup_scenario`). Without it the app starts on the `design` scenario. With it, the value must be `t1` to `t4`:
+**Prerequisite: T39 on `main`.** Choosing a scenario at launch comes from correction task T39. `application_commit` must contain it, or the scenario rows below cannot be performed.
 
-| Value | Starts on | Fit for this pass |
-| --- | --- | --- |
-| unset | `design` | Yes. Use it for everything except the Unicode rows. |
-| `t1` | `large` (100,000 rows) | No. Measurement mode drives its own scripted input for `secs` seconds (default 60), prints samples, then quits, and it does not read or write `preferences.toml`, so zoom is not remembered. |
-| `t2` | The 5 MB compare pair | No, for the same reason. |
-| `t3`, `t4` | `design` | No, for the same reason. |
+**Choosing the scenario.** Set `FUZZY_DEDUPE_SCENARIO` to a scenario name on a normal launch. The app starts on that fixture scenario, and New scan replays it:
 
-New scan on a normal launch replays the same `design` scenario, because it uses the startup scenario (`startup_scenario`). Scans in MS-1 are simulated (C-03), so adding real folders with Japanese, Arabic or emoji names does not put those names in Findings. The portal folder picker does show your real folders, so it is the one place real names appear.
+```bash
+FUZZY_DEDUPE_SCENARIO=unicode target/release/fuzzy-dedupe
+```
 
-**The `unicode` scenario has no way in.** Nothing in the shipped binary starts on it. `ScenarioKind::from_name` and `adopt_scenario` can select it, but only test code calls them, and the `design` scenario contains no Japanese, Arabic or emoji names. The `unicode` scenario holds exactly what the pass needs: Japanese and Arabic folder names and file names, `📝 notes ✅.txt`, a decomposed-accent name, and a path of seven folders, starting with `プロジェクト`. As the tree stands, rows UN01 to UN04 and LP01 to LP04 cannot be completed by launching the app. Do not mark them `n/a`. Mark them `blocked`, say so in the notes, and record the defect in [Triage](#triage). The plan's recovery rule applies: a defect blocks T26 and appends a correction task. Such a task changes `crates/`, which changes the binding above, so the owner decides first whether the rest of the pass runs on the current build or waits for it.
+- Names: `large`, `mixed`, `issues`, `empty`, `unicode`, `stale`, `design`.
+- Unset: the app starts on `design`.
+- An unknown name prints one line to standard error listing the valid names, and the app starts on `design`.
+- `FUZZY_DEDUPE_MEASURE` wins if both are set. Leave it unset for this pass: measurement mode scripts its own input and quits.
+- Preferences behave normally, so zoom and window size carry over between launches. Scans are simulated (C-03), so adding real folders does not put their names in Findings. The portal folder picker shows your real folders.
+
+Which scenario each part of the pass uses:
+
+| Scenario | Use it for |
+| --- | --- |
+| `design` | The default. Scales, zoom, the chords, focus restoration, keyboard reach and grayscale, unless a row names another scenario. |
+| `unicode` | UN01 to UN04 and LP01 to LP04: Japanese, Arabic, emoji and decomposed-accent names, a long path and mixed line endings. |
+| `large` | WN01 and ZM200 repeated with a long table, and KB01 on a table that scrolls. |
+| `issues` | KB01's discovery-problem details link. |
+| `empty` | ES01, the scan that found no relationship. |
+| `stale` | FR05 repeated, to see Review cleanup with stale evidence. |
+| `mixed` | Not required by a row. Use it if a row fails on `design` and you want a smaller case. |
 
 ## What each row asks
 
@@ -102,9 +115,9 @@ GNOME on Wayland, in the Fedora Workstation virtual machine. Rows that the virtu
 | SC125 | Display scale 125%: Findings, Compare and one popup are readable, nothing is clipped or overlapped, and every action is reachable with visible focus. |  |  |
 | SC150 | Display scale 150%: Findings, Compare and one popup are readable, nothing is clipped or overlapped, and every action is reachable with visible focus. |  |  |
 | SC200 | Display scale 200%: Findings, Compare and one popup are readable, nothing is clipped or overlapped, and every action is reachable with visible focus. |  |  |
-| WN01 | Window at the 1024 × 600 minimum (note the scale): Findings, Compare and every popup stay usable, popup bodies scroll, and each popup's action footer stays visible (§11.3 collapse order, §11.10). |  |  |
+| WN01 | Window at the 1024 × 600 minimum, on `design` and again on `large` (note the scale): Findings, Compare and every popup stay usable, popup bodies scroll, and each popup's action footer stays visible (§11.3 collapse order, §11.10). |  |  |
 | ZM80 | In-app zoom 80% (`Ctrl+-` to the floor): rows and controls shrink, text stays readable, nothing is clipped. |  |  |
-| ZM200 | In-app zoom 200% (`Ctrl+=` to the ceiling): rows and controls grow, popups fit the window with body scrolling and a visible footer, and every action stays reachable. |  |  |
+| ZM200 | In-app zoom 200% (`Ctrl+=` to the ceiling), on `design` and again on `large`: rows and controls grow, popups fit the window with body scrolling and a visible footer, and every action stays reachable. |  |  |
 | ZM00 | `Ctrl+0` resets zoom, and the zoom level you set before closing the app is the one it opens with next time. |  |  |
 | MM01 | Move the window between two monitors of different scale, in both directions, with Findings showing and again with a popup open: the window re-renders crisply at the new scale, text and controls keep their proportions, and focus is not lost. |  |  |
 | CH01 | Global, `Ctrl+N`: New scan. |  |  |
@@ -135,25 +148,26 @@ GNOME on Wayland, in the Fedora Workstation virtual machine. Rows that the virtu
 | CH26 | Modal shortcut blocking: with each popup open, the global and workspace chords do not act on the workspace behind it. Name any chord that does. |  |  |
 | FR01 | New scan (open with `Ctrl+N`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
 | FR02 | Matching rules (open with `Ctrl+,`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR03 | Review unique text (open with `Space` on a row that needs review): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR04 | Queue identical copies (open with the Findings queue action for identical copies, by keyboard): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR05 | Review cleanup (open with `Ctrl+Enter`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| FR03 | Review unique text (open with `Space` on a row that needs review, or Review unique text… in the row menu (Menu key or `Shift+F10`)): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| FR04 | Queue identical copies (open with `Tab` to Actions ▾ in the Findings toolbar, `Enter`, then the first item, Queue identical copies…): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| FR05 | Review cleanup, on `design` and again on `stale` (open with `Ctrl+Enter`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
 | FR06 | Keyboard shortcuts (open with `F1`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR07 | About (open with `F10`, then the About entry): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| UN01 | Japanese names (`unicode` scenario: `文書/会議/議事録_ミーティング.txt`): every character shows a glyph, no missing-glyph boxes, in Findings and in Compare. |  |  |
-| UN02 | Arabic names (`أرشيف/تقرير_الاجتماع.txt`, `نسخة.txt`): every character shows a glyph, joined and right-to-left, in Findings and in Compare. |  |  |
-| UN03 | Emoji names (`📝 notes ✅.txt`): both emoji show a glyph, and the decomposed-accent name (`Cafe` followed by U+0301, then `menu.txt`, with a space between) shows the accent on the `e`. |  |  |
-| UN04 | Long path (the seven-folder path starting with `プロジェクト`): the row stays laid out, nothing overflows the window, and the full path is visible somewhere without the pointer. |  |  |
-| PK01 | Portal folder picker: the New scan folder add action opens the desktop's own picker by keyboard, a folder can be chosen with the keyboard alone, it is added to the list, and focus returns to New scan. |  |  |
+| FR07 | About (open with `F10`, then About Fuzzy DeDupe in the main menu): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| UN01 | On `unicode`: Japanese names (`unicode` scenario: `文書/会議/議事録_ミーティング.txt`): every character shows a glyph, no missing-glyph boxes, in Findings and in Compare. |  |  |
+| UN02 | On `unicode`: Arabic names (`أرشيف/تقرير_الاجتماع.txt`, `نسخة.txt`): every character shows a glyph, joined and right-to-left, in Findings and in Compare. |  |  |
+| UN03 | On `unicode`: emoji names (`📝 notes ✅.txt`): both emoji show a glyph, and the decomposed-accent name (`Cafe` followed by U+0301, then `menu.txt`, with a space between) shows the accent on the `e`. |  |  |
+| UN04 | On `unicode`: long path (the seven-folder path starting with `プロジェクト`): the row stays laid out, nothing overflows the window, and the full path is visible somewhere without the pointer. |  |  |
+| PK01 | Portal folder picker: in New scan (`Ctrl+N`), `Tab` to + Add folder and press `Enter` or `Space`. The desktop's own picker (titled Add folders to scan) opens, a folder can be chosen with the keyboard alone, it is added to the list, and focus returns to New scan. |  |  |
 | GS01 | Compare in grayscale (record how you made it grayscale): added, removed and changed lines are told apart by their side labels, without color. |  |  |
-| KB01 | Findings: every action (search, row focus, expand and collapse, compare, queue, row menu, copy path, sort, filter) is reachable by keyboard and shows visible focus. |  |  |
+| KB01 | Findings, on `design`: every action is reachable by keyboard and shows visible focus: search (`Ctrl+F`), Actions ▾ and its four items (Queue identical copies…, Expand all groups, Collapse all groups, Choose columns…), the Sort button (labelled Sort: and the current order) and its menu, the relationship filter chips, Compare, Review cleanup, row focus and expansion, the row menu and its six items (Review unique text…, Keep, Make this the reference, Protect this file, Open containing folder, Copy path). Actions ▾ and Sort need a scan with results. On `issues`, the Show details or Hide details link under the chips also takes focus and opens the discovery-problem list. |  |  |
+| ES01 | On `empty`: the No relationships found message appears, its New scan button takes keyboard focus with a visible ring, and `Enter` opens New scan. Focus returns to the button when the popup closes. |  |  |
 | KB02 | Compare: every action (changes, candidates, pane switch, wrap, linked scroll, select and copy, back) is reachable by keyboard and shows visible focus. |  |  |
 | KB03 | Every popup: every control, including its footer actions, is reachable with `Tab` and `Shift+Tab` and shows visible focus. |  |  |
 | KB04 | The rail, the main menu and its entries (Appearance, Zoom, Keyboard shortcuts, Open log folder, About, Quit) are reachable by keyboard and show visible focus. |  |  |
-| LP01 | Long path, details: the full path is reachable through a keyboard-reachable details view; hover alone is not enough (§11.10). |  |  |
-| LP02 | Long path, copy: `Ctrl+Shift+C` copies the full path; paste it into a text editor and compare it with the details view. |  |  |
-| LP03 | Unicode names, details: the full Japanese, Arabic and emoji paths are reachable through the details view by keyboard. |  |  |
-| LP04 | Unicode names, copy: `Ctrl+Shift+C` copies each full path with every character intact when pasted into a text editor. |  |  |
+| LP01 | On `unicode`, long path, full path without the pointer: the Folder column and Compare's pinned header truncate long paths, and the app has no separate details view that the source shows. Queue the file and open Review cleanup (`Ctrl+Enter`), which lists full paths. Record which surface shows the whole path by keyboard alone. If none does, mark `fail` (§11.10: hover alone is insufficient) and add it to Triage. |  |  |
+| LP02 | On `unicode`, long path, copy: `Ctrl+Shift+C` copies the full path; paste it into a text editor and compare it with the details view. |  |  |
+| LP03 | On `unicode`, Unicode names, full path without the pointer: the same surfaces as LP01 show every Japanese, Arabic and emoji character of the full path, in order. |  |  |
+| LP04 | On `unicode`, Unicode names, copy: `Ctrl+Shift+C` copies each full path with every character intact when pasted into a text editor. |  |  |
 
 ### GNOME rows the virtual machine cannot exercise faithfully
 
@@ -177,9 +191,9 @@ Method for rows KX01 on: in Plasma's System Settings, open Keyboard, then Shortc
 | SC125 | Display scale 125%: Findings, Compare and one popup are readable, nothing is clipped or overlapped, and every action is reachable with visible focus. |  |  |
 | SC150 | Display scale 150%: Findings, Compare and one popup are readable, nothing is clipped or overlapped, and every action is reachable with visible focus. |  |  |
 | SC200 | Display scale 200%: Findings, Compare and one popup are readable, nothing is clipped or overlapped, and every action is reachable with visible focus. |  |  |
-| WN01 | Window at the 1024 × 600 minimum (note the scale): Findings, Compare and every popup stay usable, popup bodies scroll, and each popup's action footer stays visible (§11.3 collapse order, §11.10). |  |  |
+| WN01 | Window at the 1024 × 600 minimum, on `design` and again on `large` (note the scale): Findings, Compare and every popup stay usable, popup bodies scroll, and each popup's action footer stays visible (§11.3 collapse order, §11.10). |  |  |
 | ZM80 | In-app zoom 80% (`Ctrl+-` to the floor): rows and controls shrink, text stays readable, nothing is clipped. |  |  |
-| ZM200 | In-app zoom 200% (`Ctrl+=` to the ceiling): rows and controls grow, popups fit the window with body scrolling and a visible footer, and every action stays reachable. |  |  |
+| ZM200 | In-app zoom 200% (`Ctrl+=` to the ceiling), on `design` and again on `large`: rows and controls grow, popups fit the window with body scrolling and a visible footer, and every action stays reachable. |  |  |
 | ZM00 | `Ctrl+0` resets zoom, and the zoom level you set before closing the app is the one it opens with next time. |  |  |
 | MM01 | Move the window between two monitors of different scale, in both directions, with Findings showing and again with a popup open: the window re-renders crisply at the new scale, text and controls keep their proportions, and focus is not lost. |  |  |
 | CH01 | Global, `Ctrl+N`: New scan. |  |  |
@@ -210,25 +224,26 @@ Method for rows KX01 on: in Plasma's System Settings, open Keyboard, then Shortc
 | CH26 | Modal shortcut blocking: with each popup open, the global and workspace chords do not act on the workspace behind it. Name any chord that does. |  |  |
 | FR01 | New scan (open with `Ctrl+N`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
 | FR02 | Matching rules (open with `Ctrl+,`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR03 | Review unique text (open with `Space` on a row that needs review): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR04 | Queue identical copies (open with the Findings queue action for identical copies, by keyboard): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR05 | Review cleanup (open with `Ctrl+Enter`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| FR03 | Review unique text (open with `Space` on a row that needs review, or Review unique text… in the row menu (Menu key or `Shift+F10`)): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| FR04 | Queue identical copies (open with `Tab` to Actions ▾ in the Findings toolbar, `Enter`, then the first item, Queue identical copies…): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| FR05 | Review cleanup, on `design` and again on `stale` (open with `Ctrl+Enter`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
 | FR06 | Keyboard shortcuts (open with `F1`): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| FR07 | About (open with `F10`, then the About entry): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
-| UN01 | Japanese names (`unicode` scenario: `文書/会議/議事録_ミーティング.txt`): every character shows a glyph, no missing-glyph boxes, in Findings and in Compare. |  |  |
-| UN02 | Arabic names (`أرشيف/تقرير_الاجتماع.txt`, `نسخة.txt`): every character shows a glyph, joined and right-to-left, in Findings and in Compare. |  |  |
-| UN03 | Emoji names (`📝 notes ✅.txt`): both emoji show a glyph, and the decomposed-accent name (`Cafe` followed by U+0301, then `menu.txt`, with a space between) shows the accent on the `e`. |  |  |
-| UN04 | Long path (the seven-folder path starting with `プロジェクト`): the row stays laid out, nothing overflows the window, and the full path is visible somewhere without the pointer. |  |  |
-| PK01 | Portal folder picker: the New scan folder add action opens the desktop's own picker by keyboard, a folder can be chosen with the keyboard alone, it is added to the list, and focus returns to New scan. |  |  |
+| FR07 | About (open with `F10`, then About Fuzzy DeDupe in the main menu): close with `Esc` and again with the popup's own button. Focus returns to the control or row that had it before, and no command reaches the table behind. |  |  |
+| UN01 | On `unicode`: Japanese names (`unicode` scenario: `文書/会議/議事録_ミーティング.txt`): every character shows a glyph, no missing-glyph boxes, in Findings and in Compare. |  |  |
+| UN02 | On `unicode`: Arabic names (`أرشيف/تقرير_الاجتماع.txt`, `نسخة.txt`): every character shows a glyph, joined and right-to-left, in Findings and in Compare. |  |  |
+| UN03 | On `unicode`: emoji names (`📝 notes ✅.txt`): both emoji show a glyph, and the decomposed-accent name (`Cafe` followed by U+0301, then `menu.txt`, with a space between) shows the accent on the `e`. |  |  |
+| UN04 | On `unicode`: long path (the seven-folder path starting with `プロジェクト`): the row stays laid out, nothing overflows the window, and the full path is visible somewhere without the pointer. |  |  |
+| PK01 | Portal folder picker: in New scan (`Ctrl+N`), `Tab` to + Add folder and press `Enter` or `Space`. The desktop's own picker (titled Add folders to scan) opens, a folder can be chosen with the keyboard alone, it is added to the list, and focus returns to New scan. |  |  |
 | GS01 | Compare in grayscale (record how you made it grayscale): added, removed and changed lines are told apart by their side labels, without color. |  |  |
-| KB01 | Findings: every action (search, row focus, expand and collapse, compare, queue, row menu, copy path, sort, filter) is reachable by keyboard and shows visible focus. |  |  |
+| KB01 | Findings, on `design`: every action is reachable by keyboard and shows visible focus: search (`Ctrl+F`), Actions ▾ and its four items (Queue identical copies…, Expand all groups, Collapse all groups, Choose columns…), the Sort button (labelled Sort: and the current order) and its menu, the relationship filter chips, Compare, Review cleanup, row focus and expansion, the row menu and its six items (Review unique text…, Keep, Make this the reference, Protect this file, Open containing folder, Copy path). Actions ▾ and Sort need a scan with results. On `issues`, the Show details or Hide details link under the chips also takes focus and opens the discovery-problem list. |  |  |
+| ES01 | On `empty`: the No relationships found message appears, its New scan button takes keyboard focus with a visible ring, and `Enter` opens New scan. Focus returns to the button when the popup closes. |  |  |
 | KB02 | Compare: every action (changes, candidates, pane switch, wrap, linked scroll, select and copy, back) is reachable by keyboard and shows visible focus. |  |  |
 | KB03 | Every popup: every control, including its footer actions, is reachable with `Tab` and `Shift+Tab` and shows visible focus. |  |  |
 | KB04 | The rail, the main menu and its entries (Appearance, Zoom, Keyboard shortcuts, Open log folder, About, Quit) are reachable by keyboard and show visible focus. |  |  |
-| LP01 | Long path, details: the full path is reachable through a keyboard-reachable details view; hover alone is not enough (§11.10). |  |  |
-| LP02 | Long path, copy: `Ctrl+Shift+C` copies the full path; paste it into a text editor and compare it with the details view. |  |  |
-| LP03 | Unicode names, details: the full Japanese, Arabic and emoji paths are reachable through the details view by keyboard. |  |  |
-| LP04 | Unicode names, copy: `Ctrl+Shift+C` copies each full path with every character intact when pasted into a text editor. |  |  |
+| LP01 | On `unicode`, long path, full path without the pointer: the Folder column and Compare's pinned header truncate long paths, and the app has no separate details view that the source shows. Queue the file and open Review cleanup (`Ctrl+Enter`), which lists full paths. Record which surface shows the whole path by keyboard alone. If none does, mark `fail` (§11.10: hover alone is insufficient) and add it to Triage. |  |  |
+| LP02 | On `unicode`, long path, copy: `Ctrl+Shift+C` copies the full path; paste it into a text editor and compare it with the details view. |  |  |
+| LP03 | On `unicode`, Unicode names, full path without the pointer: the same surfaces as LP01 show every Japanese, Arabic and emoji character of the full path, in order. |  |  |
+| LP04 | On `unicode`, Unicode names, copy: `Ctrl+Shift+C` copies each full path with every character intact when pasted into a text editor. |  |  |
 | KX01 | Global, `Ctrl+N`: no Plasma default shortcut takes this chord from the app. Name the Plasma action if one does. |  |  |
 | KX02 | Global, `Ctrl+1` / `Ctrl+2`: no Plasma default shortcut takes this chord from the app. Name the Plasma action if one does. |  |  |
 | KX03 | Global, `Ctrl+,`: no Plasma default shortcut takes this chord from the app. Name the Plasma action if one does. |  |  |
