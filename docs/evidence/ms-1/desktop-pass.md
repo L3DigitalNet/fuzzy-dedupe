@@ -73,7 +73,7 @@ target/release/fuzzy-dedupe
 
 The binary is `fuzzy-dedupe` (`crates/fuzzy-dedupe-app/Cargo.toml`). Record in Provenance if you use a different profile.
 
-**Prerequisite: T39 on `main`.** Choosing a scenario at launch comes from correction task T39. `application_commit` must contain it, or the scenario rows below cannot be performed.
+**Prerequisite: T39 and T40 on `main`.** Choosing a scenario at launch comes from correction task T39, and T40 makes the views conform to the review frames at every size and zoom, including keyboard access to full paths. `application_commit` must contain both, or the scenario rows below cannot be performed and the layout rows test superseded behaviour.
 
 **Choosing the scenario.** Set `FUZZY_DEDUPE_SCENARIO` to a scenario name on a normal launch. The app starts on that fixture scenario, and New scan replays it:
 
