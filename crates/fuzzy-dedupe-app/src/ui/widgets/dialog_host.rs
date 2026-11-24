@@ -12,11 +12,13 @@
 //! For the open popup, [`show`] draws the title, a reachable close control
 //! and the popup's own body (`ui/dialogs/*.rs`) inside a modal at the size
 //! the popup's size hook gives (`DialogDraft::size`, its reference size
-//! unless the popup overrides it), shrunk to the usable viewport; a popup
-//! with a pinned footer gets it drawn below a body that scrolls. Esc
-//! cancels and Enter runs the popup's non-destructive default; both are
-//! consumed here before the popup's widgets see them. Closing in any way puts focus back
-//! on the invoker on the next frame ([`begin_frame`]).
+//! unless the popup overrides it), shrunk to the usable viewport. Every
+//! popup's action footer (`DialogDraft::footer`) is drawn in one slot pinned
+//! to the foot of the content inset, below a body that scrolls in the space
+//! above it. Esc cancels and Enter runs the popup's non-destructive default;
+//! both are consumed here before the popup's widgets see them. Closing in
+//! any way puts focus back on the invoker on the next frame
+//! ([`begin_frame`]).
 //!
 //! Frame order contract with `app.rs`: [`begin_frame`] runs before anything
 //! draws, the shell and workspace draw next, and [`show`] runs last, so the
@@ -242,7 +244,10 @@ pub fn constrained_size(ctx: &Context, [width, height]: [f32; 2]) -> Vec2 {
 }
 
 /// The pinned footer slot's height, one control row (spec §11.3), and its
-/// gap below the scrolling body (frame `36:2435`).
+/// gap below the scrolling body (frame `36:2435`). Every footer fits one
+/// row: Keyboard shortcuts' note is the only text in one, and it stays a
+/// single line at the popup's narrowest width (960 wide, or the 992 a
+/// 1024-wide window leaves, so the note has over 800 units).
 pub const FOOTER_HEIGHT: f32 = 30.0;
 const FOOTER_GAP: f32 = 12.0;
 
@@ -308,35 +313,35 @@ fn draw(
                         ui.colored_label(palette.color(Token::Red), message);
                     }
 
-                    // A pinned footer sits at the foot of the content area
-                    // and the body scrolls in the space above it, so the
-                    // footer stays visible and reachable however small the
-                    // viewport makes the popup (spec §11.6). The body is
-                    // drawn first, so Tab still reaches the footer last.
-                    let pinned = draft.has_pinned_footer();
+                    // The footer slot sits at the foot of the content inset
+                    // and the body scrolls in the space above it, so every
+                    // footer control stays inside the popup and clickable
+                    // however small the viewport or long the body (spec
+                    // §11.6). A footer drawn at the end of the body instead
+                    // scrolled out of view with it, where a click could not
+                    // reach it (T22, plan T36).
+                    //
+                    // ORDER: the body is drawn first, so Tab reaches every
+                    // body control before the footer's.
                     let footer = Rect::from_min_max(
                         egui::pos2(content.left(), content.bottom() - FOOTER_HEIGHT),
                         content.max,
                     );
-                    let mut body = egui::ScrollArea::vertical().auto_shrink([false, false]);
-                    if pinned {
-                        body = body
-                            .max_height((footer.top() - FOOTER_GAP - ui.cursor().top()).max(0.0));
-                    }
-                    body.show(ui, |ui| {
-                        if draft.show(ui, cx) == DialogResponse::Close {
-                            response = DialogResponse::Close;
-                        }
-                    });
-                    if pinned {
-                        let closed = ui
-                            .scope_builder(egui::UiBuilder::new().max_rect(footer), |ui| {
-                                draft.footer(ui, cx)
-                            })
-                            .inner;
-                        if closed == DialogResponse::Close {
-                            response = DialogResponse::Close;
-                        }
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .max_height((footer.top() - FOOTER_GAP - ui.cursor().top()).max(0.0))
+                        .show(ui, |ui| {
+                            if draft.show(ui, cx) == DialogResponse::Close {
+                                response = DialogResponse::Close;
+                            }
+                        });
+                    let closed = ui
+                        .scope_builder(egui::UiBuilder::new().max_rect(footer), |ui| {
+                            draft.footer(ui, cx)
+                        })
+                        .inner;
+                    if closed == DialogResponse::Close {
+                        response = DialogResponse::Close;
                     }
                 });
             response

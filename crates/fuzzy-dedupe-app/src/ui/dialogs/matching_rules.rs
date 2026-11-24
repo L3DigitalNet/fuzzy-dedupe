@@ -5,8 +5,9 @@
 //! plus the rules controls New scan reuses in its collapsible section.
 //!
 //! The dialog host (`ui/widgets/dialog_host.rs`) owns the title row, the close
-//! control, Esc, Enter, sizing and focus restoration; this file draws the body
-//! and footer inside the 16-unit content inset. Enter runs Save rules.
+//! control, Esc, Enter, sizing, focus restoration and the pinned footer slot;
+//! this file draws the body and the footer inside the 16-unit content inset.
+//! Enter runs Save rules.
 //!
 //! Three copies of the rules stay separate (spec §11.6): the saved rules
 //! (`PreferencesState::saved_rules`), this popup's [`Draft`], and the current
@@ -196,9 +197,9 @@ pub fn open(cx: &mut DialogCx<'_>) -> Draft {
     }
 }
 
-/// Draws the body and footer. Returns [`DialogResponse::Close`] when a
-/// footer action closed the popup.
+/// Draws the body; [`footer`] draws the actions. Never closes the popup.
 pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let _ = cx;
     let palette = theme::palette(mode_of(ui.ctx()));
     ui.spacing_mut().item_spacing.y = 12.0;
     rules_controls(ui, &mut draft.rules, palette, "fd.matching_rules");
@@ -217,7 +218,13 @@ pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResp
             );
         }
     });
+    DialogResponse::KeepOpen
+}
 
+/// Cancel and Save rules, in the footer slot the dialog host pins below the
+/// body. Returns [`DialogResponse::Close`] when either closed the popup.
+pub fn footer(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let palette = theme::palette(mode_of(ui.ctx()));
     let mut response = DialogResponse::KeepOpen;
     action_row(ui, |ui| {
         if primary_button(ui, "Save rules", palette).clicked() {

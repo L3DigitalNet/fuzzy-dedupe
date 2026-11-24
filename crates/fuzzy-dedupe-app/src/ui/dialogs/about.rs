@@ -22,13 +22,15 @@
 //! line 572). `tests/info_popups.rs` checks both sides.
 //!
 //! The dialog host (`ui/widgets/dialog_host.rs`) owns the title row, the close
-//! control, Esc, Enter, sizing and focus restoration; this file draws the body
-//! and footer inside the 16-unit content inset. Enter dismisses it, like Close.
+//! control, Esc, Enter, sizing, focus restoration and the pinned footer slot;
+//! this file draws the body and the footer inside the 16-unit content inset.
+//! Back belongs to the text view in the body, not to the footer. Enter
+//! dismisses the popup, like Close.
 
 use egui::{Ui, Vec2};
 
 use crate::presentation::commands::UiIntent;
-use crate::ui::dialogs::keyboard_shortcuts::{CONTROL_HEIGHT, footer, styled_galley};
+use crate::ui::dialogs::keyboard_shortcuts::{CONTROL_HEIGHT, close_footer, styled_galley};
 use crate::ui::dialogs::{DialogCx, DialogResponse};
 use crate::ui::theme::{self, CompactStyle, Palette, Token};
 use crate::ui::widgets::dialog_host;
@@ -140,8 +142,8 @@ pub fn open(cx: &mut DialogCx<'_>) -> Draft {
     Draft::default()
 }
 
-/// Draws the summary or the open text, and the footer. Returns
-/// [`DialogResponse::Close`] when Close was pressed.
+/// Draws the summary or the open text; [`footer`] draws Close. Never
+/// closes the popup.
 pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
     let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
     ui.spacing_mut().item_spacing = Vec2::ZERO;
@@ -149,9 +151,15 @@ pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResp
         View::Summary => summary(ui, draft, cx, palette),
         View::Text(notice) => text_view(ui, draft, notice, palette),
     }
-    let section_gap: f32 = theme::SPACING_SCALE[3].into();
-    ui.add_space(section_gap);
-    footer(ui, None, palette)
+    DialogResponse::KeepOpen
+}
+
+/// Close, in the footer slot the dialog host pins below the body, in both
+/// views. Returns [`DialogResponse::Close`] when Close was pressed.
+pub fn footer(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let _ = (draft, cx);
+    let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
+    close_footer(ui, None, palette)
 }
 
 fn label(ui: &mut Ui, text: &str, style: CompactStyle, color: Token, palette: &Palette) {
@@ -260,11 +268,11 @@ fn text_view(ui: &mut Ui, draft: &mut Draft, notice: Notice, palette: &Palette) 
     });
     ui.add_space(between);
 
-    // The text scrolls inside its own area sized to what is left above the
-    // footer, so Back and Close stay in view however long the text is.
-    let section_gap: f32 = theme::SPACING_SCALE[3].into();
-    let height = (ui.clip_rect().bottom() - ui.cursor().top() - CONTROL_HEIGHT - section_gap)
-        .max(CONTROL_HEIGHT);
+    // The text scrolls inside its own area sized to what is left of the
+    // host's body viewport, which ends above the pinned footer, so Back
+    // stays in view however long the text is. The body's clip rectangle is
+    // that viewport (the host's vertical scroll area).
+    let height = (ui.clip_rect().bottom() - ui.cursor().top()).max(CONTROL_HEIGHT);
     let ink = palette.color(Token::Ink);
     let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         styled_galley(ui, text.as_str(), CompactStyle::Document, ink, wrap_width)

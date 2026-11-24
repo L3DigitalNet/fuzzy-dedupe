@@ -436,11 +436,10 @@ mod cleanup_dialog {
         assert!(offending.is_empty(), "deletion controls: {offending:?}");
     }
 
-    /// Presses a footer button through its accessibility action. The stale
-    /// plan's dialog is taller than the 423-unit popup, so its footer sits
-    /// in the host's scroll area; a pointer click depends on the scroll
-    /// offset, which egui animates over wall-clock frames, and was flaky
-    /// under load. The accessibility action reaches the same `clicked()`.
+    /// Presses a footer button through its accessibility action, which
+    /// reaches the same `clicked()` a pointer press does. This suite tests
+    /// the dialog's behavior, not hit-testing: pointer clicks on the pinned
+    /// footers are covered by `tests/popup_footers.rs`.
     fn click_in_view(h: &mut Dialog, label: &str) {
         h.get_by_role_and_label(Role::Button, label)
             .click_accesskit();
@@ -542,19 +541,32 @@ mod cleanup_dialog {
         confirm.click();
         confirm.click();
         h.step();
-        // A third press on the next frame lands on the disabled button.
+        // A third press on the next frame lands on the disabled button,
+        // through its accessibility action rather than the pointer: the
+        // simulated run may end before that frame, and the pinned footer
+        // then draws the finished phase's Show journal where the button
+        // was, so a pointer press at its old centre would toggle the journal.
         if let Some(again) = h.query_by_role_and_label(Role::Button, "Move 3 files to Trash") {
             assert!(
                 again.accesskit_node().is_disabled(),
                 "disabled from submission"
             );
-            again.click();
+            again.click_accesskit();
         }
         h.step();
         wait(&mut h, "the run's end", |rig| {
             rig.state.operation.phase == CleanupPhase::Finished
         });
         assert_eq!(h.state().executions(), [plan], "one submission");
+        // egui delivers the second press of a double click on the next
+        // frame. When the run ended within the first, that press lands on
+        // Show journal, which the pinned footer draws where Move 3 files to
+        // Trash was; it submits nothing (checked above), so put the table
+        // back for the finished-state checks below.
+        if let Some(hide) = h.query_by_role_and_label(Role::Button, "Hide journal") {
+            hide.click_accesskit();
+            h.run();
+        }
 
         assert_label(&h, "Cleanup finished");
         assert_label(&h, "3 moved · 0 failed");
@@ -963,15 +975,20 @@ mod cleanup_dialog {
     // ── A worker's result landing mid-run ───────────────────────────────
 
     /// Opens the cleanup dialog with the engine's plan held back, waits
-    /// until the engine has built it, then releases it on step 4 of one
+    /// until the engine has built it, then releases it on step 5 of one
     /// `run()` and returns that run's outcome.
     ///
     /// Pins the PR #39 CI flake: the plan's first-drawn widgets ask egui
-    /// for two more frames (`theme/mod.rs:37`, `widget_style`), so the run
-    /// settles on step 6, as the CI log reported. Step 4 is the earliest
+    /// for one more frame (egui `theme/mod.rs:37`, `widget_style`), so the
+    /// run settles on step 6, as the CI log reported. Step 5 is the earliest
     /// release kittest's default budget of 4 rejects: kittest 0.37 checks
     /// for a settled frame before it counts step 5 as an overrun, so a
-    /// release on step 3 settles on step 5 and passes.
+    /// release on step 4 settles on step 5 and passes.
+    ///
+    /// The release was one step earlier while the footer was drawn at the
+    /// end of the body (before plan T36): the growing body then gave the
+    /// footer's buttons new auto IDs, which cost a second frame. In the
+    /// host's pinned footer slot their IDs no longer depend on the body.
     fn release_plan_mid_run(h: &mut Dialog) -> Result<u64, ExceededMaxStepsError> {
         h.state_mut().hold = Some(Hold {
             events: Vec::new(),
@@ -988,7 +1005,7 @@ mod cleanup_dialog {
         h.run();
         assert_eq!(phase(h), CleanupPhase::Building, "the plan is still held");
         if let Some(hold) = &mut h.state_mut().hold {
-            hold.release_in = Some(3);
+            hold.release_in = Some(4);
         }
         h.try_run()
     }
@@ -1006,7 +1023,7 @@ mod cleanup_dialog {
 
         let mut h = launch("mid-run", ScenarioKind::Design);
         let steps = release_plan_mid_run(&mut h).unwrap_or_else(|err| panic!("{err}"));
-        assert!(steps >= 4, "the run reached the release: {steps} steps");
+        assert!(steps >= 5, "the run reached the release: {steps} steps");
         assert_eq!(phase(&h), CleanupPhase::Review);
         assert_label(&h, "Review cleanup");
         assert!(button_enabled(&h, "Move 3 files to Trash"));

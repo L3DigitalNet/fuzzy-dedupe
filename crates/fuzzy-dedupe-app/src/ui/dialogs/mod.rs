@@ -4,8 +4,9 @@
 //! The application-owned popups (spec §11.6) and the one shape they share.
 //!
 //! Each popup's file owns its draft type and exposes `open` (the draft for a
-//! new popup), `show` (body and footer) and, for popups whose Enter runs a
-//! primary action, `submit`. The dispatch below is the only place that
+//! new popup), `show` (the body), `footer` (the action footer, which the
+//! dialog host pins below the scrolling body) and, for popups whose Enter
+//! runs a primary action, `submit`. The dispatch below is the only place that
 //! names every popup, so a dialog task edits its own file and never this
 //! one (plan D-004).
 //!
@@ -114,26 +115,8 @@ impl DialogDraft {
         }
     }
 
-    /// Whether the popup draws its action footer through [`Self::footer`],
-    /// which the dialog host pins below the scrolling body. The others draw
-    /// their footer at the end of [`Self::show`], where it scrolls with the
-    /// body when the viewport is too small for it.
-    #[must_use]
-    pub const fn has_pinned_footer(&self) -> bool {
-        matches!(self, Self::NewScan(_))
-    }
-
-    /// Draws the pinned action footer of a popup with
-    /// [`Self::has_pinned_footer`]; draws nothing for any other.
-    pub fn footer(&mut self, ui: &mut egui::Ui, cx: &mut DialogCx<'_>) -> DialogResponse {
-        match self {
-            Self::NewScan(draft) => new_scan::footer(ui, draft, cx),
-            _ => DialogResponse::KeepOpen,
-        }
-    }
-
-    /// Draws the popup's body, and its footer unless it is pinned (see
-    /// [`Self::has_pinned_footer`]).
+    /// Draws the popup's body, which the dialog host scrolls above the
+    /// footer.
     pub fn show(&mut self, ui: &mut egui::Ui, cx: &mut DialogCx<'_>) -> DialogResponse {
         match self {
             Self::MatchingRules(draft) => matching_rules::show(ui, draft, cx),
@@ -143,6 +126,26 @@ impl DialogDraft {
             Self::Cleanup(draft) => cleanup::show(ui, draft, cx),
             Self::KeyboardShortcuts(draft) => keyboard_shortcuts::show(ui, draft, cx),
             Self::About(draft) => about::show(ui, draft, cx),
+        }
+    }
+
+    /// Draws the popup's action footer into the slot the dialog host pins
+    /// below the body (spec §11.6: the footer stays reachable however far
+    /// the body scrolls). Every popup has one.
+    ///
+    /// ORDER: the host calls this after [`Self::show`] in the same frame,
+    /// so Tab reaches the body's controls before the footer's, and a footer
+    /// may rely on what `show` recorded in the draft this frame (Review
+    /// cleanup's run reports, Review unique text's checkbox).
+    pub fn footer(&mut self, ui: &mut egui::Ui, cx: &mut DialogCx<'_>) -> DialogResponse {
+        match self {
+            Self::MatchingRules(draft) => matching_rules::footer(ui, draft, cx),
+            Self::NewScan(draft) => new_scan::footer(ui, draft, cx),
+            Self::UniqueTextReview(draft) => unique_text_review::footer(ui, draft, cx),
+            Self::QueueIdentical(draft) => queue_identical::footer(ui, draft, cx),
+            Self::Cleanup(draft) => cleanup::footer(ui, draft, cx),
+            Self::KeyboardShortcuts(draft) => keyboard_shortcuts::footer(ui, draft, cx),
+            Self::About(draft) => about::footer(ui, draft, cx),
         }
     }
 

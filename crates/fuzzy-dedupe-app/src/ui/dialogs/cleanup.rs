@@ -6,10 +6,11 @@
 //! running, stopped and finished states of the simulated cleanup (plan T18).
 //!
 //! The dialog host (`ui/widgets/dialog_host.rs`) owns the title row, the close
-//! control, Esc, Enter, sizing and focus restoration; this file draws the body
-//! and footer inside the 16-unit content inset and supplies the phase's title
-//! through [`title`]. Enter only dismisses this popup: its primary action
-//! moves files to Trash, which no key may trigger (spec §11.10).
+//! control, Esc, Enter, sizing, focus restoration and the pinned footer slot;
+//! this file draws the body and each phase's footer inside the 16-unit
+//! content inset and supplies the phase's title through [`title`]. Enter
+//! only dismisses this popup: its primary action moves files to Trash,
+//! which no key may trigger (spec §11.10).
 //!
 //! Everything shown is read from `OperationState` (C-06 events applied by
 //! `presentation/events.rs`) and the scan results; the only things this file
@@ -118,42 +119,40 @@ const NO_PERMANENT_DELETE: &str =
 const NEVER_DELETES: &str =
     "Fuzzy DeDupe never deletes permanently. This file will be left in place.";
 
-/// Draws the body and footer. Returns [`DialogResponse::Close`] when a
-/// footer action closed the popup.
+/// Draws the body of the current phase; [`footer`] draws its actions.
+/// Never closes the popup itself.
 pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
-    let palette = theme::palette(dialog_host::mode_of(ui.ctx()));
-    let op: &OperationState = cx.operation;
-    if let Some(report) = &op.report
+    // The body records every run report it sees, so the footer, drawn after
+    // it in the same frame, counts the same rows (see the module docs).
+    if let Some(report) = &cx.operation.report
         && !draft.runs.iter().any(|seen| seen.plan == report.plan)
     {
         draft.runs.push(Arc::clone(report));
     }
-    let view = View {
-        op,
-        scan: cx.scan,
-        queue: cx.queue,
-        palette,
-        rows: merged_rows(op, &draft.runs),
-        out: RefCell::new(Vec::new()),
-    };
+    let view = View::new(ui, draft, cx);
     ui.spacing_mut().item_spacing.y = 12.0;
-
-    match op.phase {
+    match view.op.phase {
         CleanupPhase::Idle | CleanupPhase::Building => view.preparing(ui),
         CleanupPhase::Review => view.review(ui),
         CleanupPhase::Running | CleanupPhase::Stopping => view.running(ui),
         CleanupPhase::Stopped | CleanupPhase::Finished => view.ended(ui, draft),
     }
-    ui.add_space(2.0);
+    view.send(cx);
+    DialogResponse::KeepOpen
+}
+
+/// The current phase's note and actions, in the footer slot the dialog
+/// host pins below the body. Returns [`DialogResponse::Close`] when Cancel
+/// or Close closed the popup.
+pub fn footer(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let view = View::new(ui, draft, cx);
     let response = view.footer(ui, draft);
-    for intent in view.out.into_inner() {
-        cx.intents.push(intent);
-    }
+    view.send(cx);
     response
 }
 
 /// One frame's read of the state, and the intents its controls sent, which
-/// [`show`] hands to the dialog context once drawing is done.
+/// [`show`] and [`footer`] hand to the dialog context once drawing is done.
 struct View<'a> {
     op: &'a OperationState,
     scan: &'a ScanState,
@@ -232,6 +231,27 @@ fn status_color(palette: &Palette, status: DialogStatus) -> Color32 {
         DialogStatus::BlockedNoTrash | DialogStatus::NeedsCheck => Token::Amber,
         DialogStatus::Ready | DialogStatus::Waiting => Token::Muted,
     })
+}
+
+impl<'a> View<'a> {
+    fn new(ui: &Ui, draft: &Draft, cx: &DialogCx<'a>) -> Self {
+        let op: &OperationState = cx.operation;
+        Self {
+            op,
+            scan: cx.scan,
+            queue: cx.queue,
+            palette: theme::palette(dialog_host::mode_of(ui.ctx())),
+            rows: merged_rows(op, &draft.runs),
+            out: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Hands the intents this frame's controls sent to the dialog context.
+    fn send(self, cx: &mut DialogCx<'_>) {
+        for intent in self.out.into_inner() {
+            cx.intents.push(intent);
+        }
+    }
 }
 
 impl View<'_> {
