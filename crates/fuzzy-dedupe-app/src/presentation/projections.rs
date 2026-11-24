@@ -16,9 +16,10 @@ use fuzzy_dedupe_domain::{
     ContainmentDirection, FileId, Group, GroupId, Measurement, Member, MemberDecision, MemberRole,
     Refusal, RelationKind, ScanId, ScanResults,
 };
+use fuzzy_dedupe_engine::compare::ComparisonRequest;
 
 use crate::presentation::state::{
-    FindingsState, PresentationState, QueueState, RowId, ScanStage, SortKey,
+    ComparePair, FindingsState, PresentationState, QueueState, RowId, ScanStage, SortKey,
 };
 
 /// The status bar's two ends.
@@ -772,6 +773,177 @@ pub fn folder_label(folder: &str) -> String {
     }
 }
 // ── Compare projections (T15) ────────────────────────────────────────────
+
+/// Separator between the parts of a pinned file identity's detail line
+/// (frame `13:1415`).
+pub const IDENTITY_SEPARATOR: &str = "   ·   ";
+
+/// One pane's pinned file identity (frame `13:1410`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneIdentity {
+    pub file: FileId,
+    pub name: String,
+    pub path: String,
+    /// "12.8 KiB   ·   modified 2026-05-02".
+    pub size_and_date: String,
+    /// "A · Reference", "B · Review first": the side letter and the file's
+    /// Decision cell, so the pane says what Findings says about the row.
+    pub role: String,
+}
+
+/// What Compare shows about its pair. Side A is the counterpart (the
+/// evidence anchor, left pane) and side B the target, the file Queue B
+/// names (C-04 as T35 oriented it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompareView {
+    /// "G004".
+    pub group_label: String,
+    /// The pair, A first: "`Design_Spec.txt`  ↔  `Design_Spec_draft.txt`".
+    pub pair_label: String,
+    pub a: PaneIdentity,
+    pub b: PaneIdentity,
+    /// The pair's direct relation; `None` when the two have no direct edge,
+    /// which shows no invented score (§10.1).
+    pub relation: Option<RelationKind>,
+    /// "97.9% similar"; `None` for a relation that has no score.
+    pub score: Option<String>,
+    /// The candidate stepper's files: every other member of the group, the
+    /// current reference first, then group order.
+    pub candidates: Vec<FileId>,
+    /// The counterpart's place in [`Self::candidates`].
+    pub candidate_index: usize,
+}
+
+fn identity(group: &Group, queue: &QueueState, member: &Member, letter: &str) -> PaneIdentity {
+    let view = member_view(group, queue, member);
+    PaneIdentity {
+        file: member.file,
+        name: member.name.clone(),
+        path: member.display_path.clone(),
+        size_and_date: format!(
+            "{}{IDENTITY_SEPARATOR}modified {}",
+            size_label(member.size_bytes),
+            date_label(member.modified)
+        ),
+        role: format!("{letter} · {}", decision_label(member, &view, queue)),
+    }
+}
+
+/// The pinned identity row's accessible name: "A · Reference:
+/// `Design_Spec.txt`, `~/Documents/Design/Design_Spec.txt`, 12.8 KiB,
+/// modified 2026-05-02".
+#[must_use]
+pub fn identity_name(identity: &PaneIdentity) -> String {
+    format!(
+        "{}: {}, {}, {}",
+        identity.role,
+        identity.name,
+        identity.path,
+        identity.size_and_date.replace(IDENTITY_SEPARATOR, ", ")
+    )
+}
+
+/// Compare's view of `pair` in `results`, or `None` when the pair is not
+/// one of these results' groups (a pair left over from an earlier scan, or
+/// a file compared with itself): Compare then shows its no-pair state.
+#[must_use]
+pub fn compare_view(
+    results: &ScanResults,
+    queue: &QueueState,
+    pair: ComparePair,
+) -> Option<CompareView> {
+    if pair.target == pair.counterpart {
+        return None;
+    }
+    let group = results.groups.iter().find(|g| g.id == pair.group)?;
+    let target = group.member(pair.target)?;
+    let counterpart = group.member(pair.counterpart)?;
+    let measurement = group
+        .edge_between(pair.target, pair.counterpart)
+        .and_then(|edge| edge.measurement_from(pair.target));
+    let score = measurement.and_then(|m| match m {
+        Measurement::Similar(p) => Some(format!("{} similar", percent(p.get()))),
+        Measurement::Containment {
+            coverage,
+            direction: ContainmentDirection::InsideCounterpart,
+        } => Some(format!("{} of B is inside A", percent(coverage.get()))),
+        Measurement::Containment {
+            coverage,
+            direction: ContainmentDirection::ContainsCounterpart,
+        } => Some(format!("{} of A is inside B", percent(coverage.get()))),
+        Measurement::Identical(_) | Measurement::SameText => None,
+    });
+    let reference = current_reference(group, queue);
+    let mut candidates: Vec<FileId> = reference
+        .into_iter()
+        .chain(group.members.iter().map(|m| m.file))
+        .filter(|file| *file != pair.target)
+        .collect();
+    let mut seen = HashSet::new();
+    candidates.retain(|file| seen.insert(*file));
+    let candidate_index = candidates
+        .iter()
+        .position(|file| *file == pair.counterpart)
+        .unwrap_or(0);
+    Some(CompareView {
+        group_label: group.label.clone(),
+        pair_label: format!("{}  ↔  {}", counterpart.name, target.name),
+        a: identity(group, queue, counterpart, "A"),
+        b: identity(group, queue, target, "B"),
+        relation: measurement.map(|m| m.relation()),
+        score,
+        candidates,
+        candidate_index,
+    })
+}
+
+/// "Candidate 1 of 2".
+#[must_use]
+pub fn candidate_label(index: usize, count: usize) -> String {
+    format!("Candidate {} of {count}", index + 1)
+}
+
+/// "Change 1 of 2", or "No changes" for a pair whose panes hold none.
+#[must_use]
+pub fn change_label(active: usize, changes: usize) -> String {
+    if changes == 0 {
+        "No changes".to_owned()
+    } else {
+        format!("Change {} of {changes}", active.min(changes - 1) + 1)
+    }
+}
+
+/// What changed since the comparison Compare shows was computed, or `None`
+/// while its evidence is current: "A changed since this comparison", and
+/// so on for B, both files and the matching rules.
+///
+/// The comparison's own key is the evidence; the engine's published view
+/// is the current state. A file the view does not know is not reported as
+/// changed: the stale marker states a change, it never guesses one.
+#[must_use]
+pub fn stale_note(shown: &ComparisonRequest, queue: &QueueState) -> Option<String> {
+    let changed = |file, snapshot| queue.snapshot(file).is_some_and(|now| now != snapshot);
+    let a = changed(shown.counterpart, shown.counterpart_snapshot);
+    let b = changed(shown.target, shown.target_snapshot);
+    let rules = queue
+        .view
+        .as_ref()
+        .is_some_and(|view| view.rules != shown.rules);
+    let files = match (a, b) {
+        (true, true) => Some("A and B"),
+        (true, false) => Some("A"),
+        (false, true) => Some("B"),
+        (false, false) => None,
+    };
+    match (files, rules) {
+        (None, false) => None,
+        (Some(files), false) => Some(format!("{files} changed since this comparison")),
+        (None, true) => Some("The matching rules changed since this comparison".to_owned()),
+        (Some(files), true) => Some(format!(
+            "{files} and the matching rules changed since this comparison"
+        )),
+    }
+}
 
 /// The toolbar's "Review cleanup (N)" label.
 #[must_use]

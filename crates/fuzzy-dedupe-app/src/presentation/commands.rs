@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use egui::{Context, Key, ViewportCommand};
 use fuzzy_dedupe_domain::{
-    CompareMode, FileId, GroupId, MatchingRules, Member, QueueOrigin, ScanSetup,
+    CompareMode, FileId, GroupId, MatchingRules, Member, MemberRole, QueueOrigin, ScanSetup,
 };
 use fuzzy_dedupe_engine::compare::ComparisonRequest;
 use fuzzy_dedupe_engine::service::{
@@ -297,6 +297,9 @@ pub fn dispatch(
             }
         }
         UiIntent::CloseOverlay => dialog_host::close(&mut state.dialog),
+        UiIntent::SwitchWorkspace(WorkspaceState::Compare) => {
+            switch_to_compare(state, followups);
+        }
         UiIntent::SwitchWorkspace(workspace) => state.workspace = workspace,
         UiIntent::OpenCompare {
             target,
@@ -344,6 +347,29 @@ pub fn dispatch(
         },
         UiIntent::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
     }
+}
+
+/// The rail's Compare entry and Ctrl+2 (spec §11.2): show the focused
+/// Findings row against its counterpart when it is a member with one,
+/// exactly as `OpenCompare` from that row would; otherwise keep the last
+/// pair, which the Compare view shows, or explains the disabled state when
+/// it is not a valid pair of these results. The counterpart is the role the
+/// review service recorded (`QueueState::role`), never derived here.
+fn switch_to_compare(state: &mut PresentationState, followups: &mut IntentQueue) {
+    let focused = state.findings.focused.and_then(|row| {
+        let RowId::Member { file, .. } = row else {
+            return None;
+        };
+        let (_, member) = find_member(state, file)?;
+        match state.queue.role(member) {
+            MemberRole::Member(link) => Some((row, file, link.counterpart)),
+            MemberRole::Reference => None,
+        }
+    });
+    if let Some((row, target, counterpart)) = focused {
+        open_compare(state, target, counterpart, Some(row), followups);
+    }
+    state.workspace = WorkspaceState::Compare;
 }
 
 fn open_compare(

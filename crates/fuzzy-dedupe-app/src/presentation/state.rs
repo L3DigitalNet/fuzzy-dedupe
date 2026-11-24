@@ -253,6 +253,16 @@ pub struct CompareState {
     pub selection: [PaneSelection; 2],
     /// The Findings row Compare was entered from, refocused on return.
     pub return_row: Option<RowId>,
+    /// The request Compare's pair was last answered for, in any mode:
+    /// both pinned snapshots and the rules revision the panes show. Written
+    /// only by `ui/compare.rs`, from [`ComparisonSlot::key`] whenever the
+    /// slot holds this pair. Compare re-requests from it (a mode switch, or
+    /// the slot taken by Review unique text), so the panes keep showing the
+    /// evidence they were opened on, and the stale-evidence check compares
+    /// it with the published view. Rejected: rebuilding the request from
+    /// the current snapshots, which would silently re-aim the panes at
+    /// changed text and hide that the evidence went stale.
+    pub pinned: Option<ComparisonRequest>,
 }
 
 impl Default for CompareState {
@@ -271,6 +281,7 @@ impl Default for CompareState {
             active_change: 0,
             selection: [PaneSelection::default(); 2],
             return_row: None,
+            pinned: None,
         }
     }
 }
