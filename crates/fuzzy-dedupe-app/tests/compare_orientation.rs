@@ -10,9 +10,10 @@
 //! `tests/review_popups.rs` does: `run_logic` then `draw` per frame, with
 //! test doubles for every platform adapter.
 //!
-//! `ui/compare.rs` is still T15's stub, so the Compare workspace draws no
-//! panes. The diff widget is therefore drawn alone, from the Compare state
-//! the app built, exactly as T15 will hand it over.
+//! The Compare workspace is observed as the app draws it: the pinned
+//! identity over the left pane and the evidence row's "Only in A/B ▾"
+//! menus, which carry the Only-in counts since the panes lost their
+//! caption (T37).
 //!
 //! The design pair is frame `13:1304`'s: `Design_Spec.txt` (the reference,
 //! "A · Reference") on the left and `Design_Spec_draft.txt` (the target,
@@ -31,11 +32,8 @@ mod compare_orientation {
     use fuzzy_dedupe_app::app::{AppDeps, Clock, FuzzyDedupeApp};
     use fuzzy_dedupe_app::measure::NoMeasurement;
     use fuzzy_dedupe_app::presentation::commands::UiIntent;
-    use fuzzy_dedupe_app::presentation::state::{
-        CompareState, DialogKind, DialogSubject, PresentationState,
-    };
-    use fuzzy_dedupe_app::ui::widgets::diff_view;
-    use fuzzy_dedupe_app::ui::{glyphs, theme};
+    use fuzzy_dedupe_app::presentation::state::{DialogKind, DialogSubject, PresentationState};
+    use fuzzy_dedupe_app::ui::compare;
     use fuzzy_dedupe_domain::{CompareMode, FileId, QueueOrigin, ScanResults};
     use fuzzy_dedupe_engine::compare::AlignedComparison;
     use fuzzy_dedupe_engine::fixtures::design::{self, ComparedPair};
@@ -199,30 +197,7 @@ mod compare_orientation {
         (pair, a, b)
     }
 
-    // ── Compare and the diff widget ──────────────────────────────────────
-
-    /// The diff widget alone, given Compare's state, with the shipped fonts
-    /// and styles. The theme is installed after the harness's first frame,
-    /// because the shipped text styles do not exist before
-    /// `theme::install`; until then the closure draws nothing.
-    fn widget(compare: CompareState) -> Harness<'static, (CompareState, bool)> {
-        let mut harness = Harness::builder()
-            .with_max_steps(SETTLE_STEPS)
-            .with_size(Vec2::new(1600.0, 800.0))
-            .build_ui_state(
-                |ui, (compare, themed): &mut (CompareState, bool)| {
-                    if *themed {
-                        diff_view::show(ui, compare, true);
-                    }
-                },
-                (compare, false),
-            );
-        theme::install(&harness.ctx, Vec::new());
-        glyphs::install(&harness.ctx);
-        harness.state_mut().1 = true;
-        harness.run();
-        harness
-    }
+    // ── Compare ──────────────────────────────────────────────────────────
 
     #[test]
     fn compare_orientation_app_design_pair_draws_the_reference_as_a_on_the_left() {
@@ -255,14 +230,29 @@ mod compare_orientation {
             "side A is the reference, side B the draft"
         );
 
-        let view = widget(state(&h).compare.clone());
-        let caption_a = diff_view::only_in_caption("A", unique_a, false);
-        let caption_b = diff_view::only_in_caption("B", unique_b, false);
-        let left = view.get_by_label(&caption_a).rect();
-        let right = view.get_by_label(&caption_b).rect();
+        // The two unique counts differ, so a swapped orientation names the
+        // wrong count in each menu.
+        h.get_by_role_and_label(Role::Button, &compare::only_in_name(false, unique_a, false));
+        h.get_by_role_and_label(Role::Button, &compare::only_in_name(true, unique_b, false));
+
+        // The pinned identity over the left pane is side A, the reference,
+        // and the one over the right pane side B, the draft. Each is one
+        // node named "<side> · <role>: <name>, …"; egui puts a label's
+        // text in the node's value.
+        let identity = |prefix: &str, name: &str| {
+            let (prefix, name) = (prefix.to_owned(), format!(": {name}, "));
+            h.get_by(move |n| {
+                n.value()
+                    .or_else(|| n.label())
+                    .is_some_and(|t| t.starts_with(&prefix) && t.contains(&name))
+            })
+            .rect()
+        };
+        let left = identity("A · ", "Design_Spec.txt");
+        let right = identity("B · ", "Design_Spec_draft.txt");
         assert!(
             left.right() <= right.left(),
-            "the A caption ({left:?}) is left of the B caption ({right:?})"
+            "the A identity ({left:?}) is left of the B identity ({right:?})"
         );
     }
 

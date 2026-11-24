@@ -19,10 +19,12 @@
 //!   in the input for the host. It writes only `selection` and
 //!   `split_ratio`, and puts copied text on egui's clipboard output, the
 //!   same output `commands::dispatch` uses for `UiIntent::CopyText`.
-//! - Each pane's caption shows its side label and the C-04 Only-in count,
-//!   labeled normalized in Normalized mode. The pinned file identity of the
-//!   Compare frame needs member names and sizes, which `CompareState` does
-//!   not carry, so the host draws it.
+//! - The host draws each pane's pinned file identity directly above the
+//!   pane (it needs member names and sizes, which `CompareState` does not
+//!   carry) and the C-04 Only-in counts, in its evidence-row menus. This
+//!   widget draws no caption, so the whole pane is text (frame `13:1304`,
+//!   spec §11.3's 744-high text area); [`show`] returns each pane's
+//!   Normalized and copy notices for the host to show in that identity.
 //!
 //! Alignment: both panes draw the same aligned rows with the same row
 //! heights, the taller of the pair's wrapped heights, so row `r` has one
@@ -51,17 +53,20 @@
 //! text and a selection is one contiguous byte range. Copying that range
 //! returns the original bytes, terminators included, with no line numbers,
 //! markers or spacers; in Normalized mode it is the normalized text, and
-//! the caption says so.
+//! the pane's notice says so.
 //!
 //! Cross-file contract with `tests/diff_view.rs`: each laid-out row of each
 //! pane is one accessibility node with author ID `diff_view:a:<row>` or
 //! `diff_view:b:<row>`, labeled with the displayed source line number (no
 //! label on a spacer), whose bounds are the row's text cell starting at the
 //! first character column. [`only_in_caption`], [`NORMALIZED_NOTICE`] and
-//! [`copied_notice`] are the strings the tests look for.
+//! [`copied_notice`] are the strings the tests look for; the first is
+//! drawn by Compare's evidence-row menus, the other two are returned by
+//! [`show`].
 //!
-//! Requirements: `theme::install` has run on the context. The captions use
-//! the compact text styles by name, and egui panics on an unknown style.
+//! Requirements: `theme::install` has run on the context. The loading and
+//! unavailable messages use the compact text styles by name, and egui
+//! panics on an unknown style.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -81,11 +86,9 @@ use crate::presentation::state::{CompareState, PaneSelection, TextPosition};
 use crate::ui::theme::{self, CompactStyle, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 
-/// Shown in each pane's caption in Normalized mode (IR-006).
+/// Each pane's notice in Normalized mode (IR-006).
 pub const NORMALIZED_NOTICE: &str = "Normalized view: copy gives normalized text";
 
-/// Height of each pane's caption in units.
-const CAPTION: f32 = 28.0;
 /// The coloured bar at a changed row's leading edge (frame `25:1082`).
 const SIDE_BAR: f32 = 3.0;
 /// The line-number gutter's reference width; it grows for six-digit files.
@@ -106,7 +109,8 @@ const AUTO_SCROLL: f32 = 12.0;
 /// Split bounds: neither pane narrower than a fifth of the area.
 const SPLIT_RANGE: (f32, f32) = (0.2, 0.8);
 
-/// The caption text for a pane's Only-in count, `letter` being "A" or "B".
+/// The text of a side's Only-in count, `letter` being "A" or "B", which
+/// Compare's "Only in A/B ▾" menus show.
 #[must_use]
 pub fn only_in_caption(letter: &str, count: u64, normalized: bool) -> String {
     let unit = if count == 1 { "line" } else { "lines" };
@@ -114,36 +118,48 @@ pub fn only_in_caption(letter: &str, count: u64, normalized: bool) -> String {
     format!("Only in {letter}: {count} {unit}{suffix}")
 }
 
-/// The caption text after a Normalized-mode copy from pane `letter`.
+/// Pane `letter`'s notice after a Normalized-mode copy from it.
 #[must_use]
 pub fn copied_notice(letter: &str) -> String {
     format!("Copied normalized text from {letter}")
 }
 
-/// Draws both panes into the remaining Compare area. `input_enabled` is
-/// false while a popup or menu is open (spec §11.6): the panes then react
-/// to no key, pointer or wheel input.
-pub fn show(ui: &mut Ui, compare: &mut CompareState, input_enabled: bool) {
+/// What each pane's text notice says this frame, side A first, `None`
+/// where there is nothing to say (IR-006).
+///
+/// The widget draws no caption: the host shows each notice in that pane's
+/// pinned identity header (`ui/compare.rs`), so the whole pane is text.
+pub type PaneNotices = [Option<String>; 2];
+
+/// Draws both panes into the remaining Compare area and returns their
+/// notices: [`NORMALIZED_NOTICE`] on each pane in Normalized mode, and
+/// [`copied_notice`] instead on the pane a Normalized-mode copy came from,
+/// until its selection changes. A copy made this frame is already
+/// reflected. Nothing is ready (loading, unavailable, no pair): no notices.
+///
+/// `input_enabled` is false while a popup or menu is open (spec §11.6):
+/// the panes then react to no key, pointer or wheel input.
+pub fn show(ui: &mut Ui, compare: &mut CompareState, input_enabled: bool) -> PaneNotices {
     let area = ui.available_rect_before_wrap();
     ui.allocate_rect(area, Sense::hover());
     let Some(result) = current(compare) else {
         message(ui, area, compare);
-        return;
+        return PaneNotices::default();
     };
     let ComparisonOutcome::Ready(aligned) = &result.outcome else {
         message(ui, area, compare);
-        return;
+        return PaneNotices::default();
     };
     let id = Id::unique("fuzzy_dedupe.diff_view");
     let mut memory: Memory = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     memory.adopt(compare, &result);
     let Some(index) = memory.index.clone() else {
-        return;
+        return PaneNotices::default();
     };
     let view = View::new(ui, &index, compare, area);
     memory.relayout(&view, compare.wrap, ui.ctx().pixels_per_point());
     let Some(layout) = memory.layout.clone() else {
-        return;
+        return PaneNotices::default();
     };
     let frame = Frame {
         aligned,
@@ -163,7 +179,19 @@ pub fn show(ui: &mut Ui, compare: &mut CompareState, input_enabled: bool) {
     for side in Side::BOTH {
         frame.paint_pane(ui, compare, &memory, side);
     }
+    let notices = Side::BOTH.map(|side| notice(aligned, &memory, side));
     ui.data_mut(|d| d.insert_temp(id, memory));
+    notices
+}
+
+/// One pane's notice: the copy notice outranks the mode notice, because it
+/// is the more specific statement about what the clipboard now holds.
+fn notice(aligned: &AlignedComparison, memory: &Memory, side: Side) -> Option<String> {
+    if memory.copied_normalized == Some(side.index()) {
+        Some(copied_notice(side.letter()))
+    } else {
+        (aligned.mode == CompareMode::Normalized).then(|| NORMALIZED_NOTICE.to_owned())
+    }
 }
 
 /// The ready comparison for Compare's pair and mode, or `None` while it is
@@ -646,7 +674,6 @@ impl Memory {
 #[derive(Clone, Copy, Debug)]
 struct PaneRects {
     outer: Rect,
-    caption: Rect,
     /// The scrolling text region, scrollbar included.
     body: Rect,
     /// Left edge of character column 0 before horizontal scrolling.
@@ -733,12 +760,9 @@ impl View {
             Rect::from_min_max(Pos2::new(gap.right(), area.top()), area.max),
         ];
         let mut panes = outer.map(|outer| {
-            let inner = outer.shrink(theme::BORDER_WIDTH);
-            let caption = Rect::from_min_size(inner.min, Vec2::new(inner.width(), CAPTION));
-            let body = Rect::from_min_max(Pos2::new(inner.left(), caption.bottom()), inner.max);
+            let body = outer.shrink(theme::BORDER_WIDTH);
             PaneRects {
                 outer,
-                caption,
                 body,
                 text_left: body.left() + SIDE_BAR + gutter + MARKER,
                 hbar: false,
@@ -1279,58 +1303,8 @@ impl Frame<'_> {
             Stroke::new(theme::BORDER_WIDTH, palette.color(Token::Line)),
             StrokeKind::Inside,
         );
-        // The caption stays on `surface`: the side letter's diffA and diffB
-        // are contrast-proven on surface, not on the `code` tint.
-        painter.hline(
-            pane.caption.x_range(),
-            pane.caption.bottom(),
-            Stroke::new(theme::BORDER_WIDTH, palette.color(Token::Line)),
-        );
-        self.paint_caption(ui, memory, side, palette);
         self.paint_rows(ui, compare, memory, side, palette);
         self.paint_scrollbars(ui, memory, side, palette);
-    }
-
-    fn paint_caption(&self, ui: &mut Ui, memory: &Memory, side: Side, palette: &Palette) {
-        let pane = self.pane(side);
-        let unique = match side {
-            Side::A => &self.aligned.only_in_a,
-            Side::B => &self.aligned.only_in_b,
-        };
-        let (strong, _, _) = side.tokens();
-        let style = CompactStyle::Supporting.text_style();
-        let normalized = self.aligned.mode == CompareMode::Normalized;
-        let notice = if memory.copied_normalized == Some(side.index()) {
-            Some(copied_notice(side.letter()))
-        } else {
-            normalized.then(|| NORMALIZED_NOTICE.to_owned())
-        };
-        let inner = pane.caption.shrink2(Vec2::new(8.0, 0.0));
-        ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(inner)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| {
-                let label = |text: String, token: Token| {
-                    egui::Label::new(
-                        egui::RichText::new(text)
-                            .text_style(style.clone())
-                            .color(palette.color(token)),
-                    )
-                    .selectable(false)
-                };
-                ui.add(label(side.letter().to_owned(), strong));
-                ui.add(label(
-                    only_in_caption(side.letter(), unique.count(), unique.normalized),
-                    Token::Ink,
-                ));
-                if let Some(notice) = notice {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(label(notice, Token::Muted));
-                    });
-                }
-            },
-        );
     }
 
     fn paint_rows(

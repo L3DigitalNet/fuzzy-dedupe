@@ -39,13 +39,20 @@ use crate::presentation::state::{
 };
 use crate::ui::WorkspaceCx;
 use crate::ui::glyphs;
-use crate::ui::shell::{CONTROL_HEIGHT, GAP};
+use crate::ui::shell::{CONTROL_HEIGHT, GAP, WORK_INSET};
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 use crate::ui::widgets::grouped_table;
 
-/// The search field's width (spec §11.3).
+/// The search field's width (spec §11.3), measured as frame `13:692` does:
+/// text box plus the trailing glyph or clear control.
 pub const SEARCH_WIDTH: f32 = 340.0;
+/// The search field's trailing glyph or clear control's width.
+const SEARCH_GLYPH_WIDTH: f32 = 24.0;
+/// The Findings table's bottom margin in the work area (frame `13:648`
+/// leaves 24 below the table: 1424 × 822 at 1600 × 960). The table grows
+/// with the window down to this margin.
+const TABLE_BOTTOM_MARGIN: f32 = 24.0;
 /// The Compare toolbar action's width (frame `13:711`).
 pub const COMPARE_WIDTH: f32 = 100.0;
 /// Filter row and chip heights (spec §11.3).
@@ -234,21 +241,26 @@ fn search_field(ui: &mut Ui, cx: &mut WorkspaceCx<'_>, palette: &Palette) {
         .id(search_id())
         .hint_text(SEARCH_NAME)
         .font(CompactStyle::Table.text_style())
-        .desired_width(SEARCH_WIDTH - 30.0)
+        // The text box takes what the trailing control and the spacing
+        // before it leave of the 340, so the whole field is 340 wide.
+        .desired_width(SEARCH_WIDTH - SEARCH_GLYPH_WIDTH - ui.spacing().item_spacing.x)
         .min_size(Vec2::new(0.0, CONTROL_HEIGHT))
         .interactive(cx.input_enabled);
     let response = ui.add(edit);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, SEARCH_NAME));
     if cx.findings.search.is_empty() {
         ui.add_sized(
-            [24.0, CONTROL_HEIGHT],
+            [SEARCH_GLYPH_WIDTH, CONTROL_HEIGHT],
             egui::Label::new(
                 egui::RichText::new(glyphs::text(ui.ctx(), Icon::Search).unwrap_or_default())
                     .color(palette.color(Token::Muted)),
             ),
         );
     } else {
-        let clear = ui.add_sized([24.0, CONTROL_HEIGHT], egui::Button::new("×").frame(false));
+        let clear = ui.add_sized(
+            [SEARCH_GLYPH_WIDTH, CONTROL_HEIGHT],
+            egui::Button::new("×").frame(false),
+        );
         clear
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, CLEAR_SEARCH_NAME));
         if cx.input_enabled && clear.clicked() {
@@ -383,11 +395,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQue
     cx.findings.last_compared = cx.compare.pair.map(|pair| pair.group);
     let projection = grouped_table::refresh_projection(cx.findings, cx.scan, cx.queue);
 
-    filter_row(ui, cx, projection.as_deref(), palette);
-    if cx.findings.show_issues && !cx.scan.issues.is_empty() {
-        issues_list(ui, cx, palette);
-    }
-    ui.add_space(GAP);
+    filter_stack(ui, cx, projection.as_deref(), palette);
 
     let running = matches!(cx.scan.stage, ScanStage::Running | ScanStage::Stopping);
     match (&cx.scan.results, projection.as_deref()) {
@@ -452,15 +460,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQue
             }
         }
         (Some(_), _) => {
-            let row_menu = grouped_table::show(
-                ui,
-                cx.findings,
-                cx.scan,
-                cx.queue,
-                intents,
-                cx.input_enabled,
-            );
-            if let Some(request) = row_menu {
+            if let Some(request) = table(ui, cx, intents) {
                 open_menu(
                     ui.ctx(),
                     intents,
@@ -479,6 +479,60 @@ pub fn show(ui: &mut egui::Ui, cx: &mut WorkspaceCx<'_>, intents: &mut IntentQue
     }
 
     draw_menu(ui, cx, intents, palette);
+}
+
+/// The filter row and, when shown, the discovery-problem list, followed by
+/// the gap to the table region.
+///
+/// They stack with exactly `GAP` between them. egui's `item_spacing.y`,
+/// added after each allocation, would add 3 units after the filter row;
+/// with the 3 the shell's toolbar row added (`shell.rs`), the table sat at
+/// 94 instead of frame `13:648`'s 88. The rows are allocated with none, and
+/// the issues list and the table region get the theme's spacing back for
+/// their own content.
+fn filter_stack(
+    ui: &mut Ui,
+    cx: &mut WorkspaceCx<'_>,
+    projection: Option<&projections::FindingsProjection>,
+    palette: &Palette,
+) {
+    let item_spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing.y = 0.0;
+    filter_row(ui, cx, projection, palette);
+    if cx.findings.show_issues && !cx.scan.issues.is_empty() {
+        ui.add_space(GAP);
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing = item_spacing;
+            issues_list(ui, cx, palette);
+        });
+    }
+    ui.add_space(GAP);
+    ui.spacing_mut().item_spacing = item_spacing;
+}
+
+/// The grouped table in the remaining height, down to its bottom margin,
+/// of which the shell's work-area inset is already part; returns the row
+/// menu its input asked for. `grouped_table::show` sizes itself to the
+/// space it is given, so the margin is applied here.
+fn table(
+    ui: &mut Ui,
+    cx: &mut WorkspaceCx<'_>,
+    intents: &mut IntentQueue,
+) -> Option<grouped_table::RowMenuRequest> {
+    let region = ui.available_rect_before_wrap();
+    let foot = (region.bottom() - (TABLE_BOTTOM_MARGIN - WORK_INSET)).max(region.top());
+    let rect = egui::Rect::from_min_max(region.min, egui::pos2(region.right(), foot));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        grouped_table::show(
+            ui,
+            cx.findings,
+            cx.scan,
+            cx.queue,
+            intents,
+            cx.input_enabled,
+        )
+    })
+    .inner
 }
 
 fn message_action_id() -> Id {
