@@ -49,7 +49,7 @@ use fuzzy_dedupe_platform::picker::{FolderPicker, PortalPicker};
 use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::{Layer as _, SubscriberExt as _};
 
-use crate::measure::{FrameHook, FrameReport};
+use crate::measure::{FrameEvents, FrameHook, FrameReport, ScanEnd, StartupScenario};
 use crate::presentation::commands::{self, IntentQueue, Services};
 use crate::presentation::events;
 use crate::presentation::preferences;
@@ -105,6 +105,18 @@ pub fn native_options_for(preferences: &PreferencesState) -> eframe::NativeOptio
         viewport: viewport_for(preferences),
         persist_window: false,
         ..Default::default()
+    }
+}
+
+/// The preferences a launch starts from: `preferences.toml`, or the
+/// defaults when `isolate` (measurement mode), so a run's window size
+/// and every other preference are the reference ones, not the owner's.
+#[must_use]
+pub fn launch_preferences(dirs: &AppDirs, isolate: bool) -> PreferencesState {
+    if isolate {
+        PreferencesState::default()
+    } else {
+        preferences::load(dirs)
     }
 }
 
@@ -307,13 +319,28 @@ const FOLLOWUP_ROUNDS: usize = 4;
 
 impl FuzzyDedupeApp {
     /// Installs the theme on `ctx`, starts the engine on the startup
-    /// scenario (`measure::startup_scenario`, the design scenario unless a
+    /// scenario (`measure::startup`, the design scenario unless a
     /// measurement run chose another), and runs the startup log expiry.
     ///
     /// # Errors
     ///
     /// The operating system's error when the engine thread cannot start.
     pub fn new(ctx: &Context, deps: AppDeps) -> std::io::Result<Self> {
+        Self::with_startup(ctx, deps, crate::measure::startup())
+    }
+
+    /// [`FuzzyDedupeApp::new`] on `startup` instead of the process's own
+    /// choice, so tests can start on a measurement scenario's data without
+    /// setting the process environment.
+    ///
+    /// # Errors
+    ///
+    /// As [`FuzzyDedupeApp::new`].
+    pub fn with_startup(
+        ctx: &Context,
+        deps: AppDeps,
+        startup: StartupScenario,
+    ) -> std::io::Result<Self> {
         let AppDeps {
             dirs,
             opener,
@@ -337,17 +364,17 @@ impl FuzzyDedupeApp {
         // Before the first pass, so every icon draws on the first frame.
         glyphs::install(ctx);
 
+        // A measurement run starts on the defaults, not the saved file
+        // (`FrameHook::isolates_preferences`); `write_preferences` keeps the
+        // other half of that contract.
+        let preferences = launch_preferences(&dirs, measure.isolates_preferences());
         let mut state = PresentationState {
-            preferences: preferences::load(&dirs),
+            preferences,
             ..PresentationState::default()
         };
         let saved_preferences = state.preferences.clone();
         let mut services = Services::new(Engine::new(engine)?, opener, picker, dirs);
-        adopt_scenario(
-            &mut services,
-            &mut state,
-            crate::measure::startup_scenario(),
-        );
+        adopt_startup(&mut services, &mut state, startup);
 
         Ok(Self {
             state,
@@ -377,8 +404,15 @@ impl FuzzyDedupeApp {
 
         let batch = self.services.engine.drain_events(EVENT_BATCH);
         let drained = batch.len();
+        let mut seen = FrameEvents::default();
         for event in batch {
-            events::apply(&mut self.state, event);
+            let observed = measured_event(&event);
+            // Only events the presentation installed: a stale scan's or a
+            // superseded request's event changes nothing on screen, so it
+            // must not start a first_paint or end a cancel_ack.
+            if events::apply(&mut self.state, event) == events::Applied::Installed {
+                seen.merge(observed);
+            }
         }
         // After the drain: a completed scan's results were installed into
         // the review service by `drain_events`, and its new view is mirrored.
@@ -389,11 +423,17 @@ impl FuzzyDedupeApp {
         }
 
         self.write_preferences(false);
+        self.measure.on_events(seen);
         self.measure.on_frame(FrameReport {
             events_drained: drained,
             intents_dispatched: self.intents_last_frame,
             cpu_usage: self.cpu_usage,
         });
+        // Queued before this frame's UI pass, so they are dispatched after
+        // it with the views' own intents (plan D-008).
+        for intent in self.measure.take_intents() {
+            self.intents.push(intent);
+        }
     }
 
     /// One UI pass, then the dispatch of its intents (eframe `App::ui`).
@@ -441,9 +481,10 @@ impl FuzzyDedupeApp {
     /// Writes changed preferences through T20's `preferences::store`, at
     /// most once per [`PREFERENCES_WRITE_INTERVAL`] unless `force`. A failed
     /// write is logged and retried on the next change (C-08: a failure is
-    /// never fatal).
+    /// never fatal). Writes nothing, not even on exit, while the hook
+    /// isolates the preferences (a measurement run).
     fn write_preferences(&mut self, force: bool) {
-        if self.state.preferences == self.saved_preferences {
+        if self.measure.isolates_preferences() || self.state.preferences == self.saved_preferences {
             return;
         }
         let due = self
@@ -556,20 +597,46 @@ fn apply_preferences(ctx: &Context, state: &PresentationState) {
     }
 }
 
+/// What a drained event tells the measurement hook; it counts once
+/// `events::apply` has installed the event. Read before `apply`, which
+/// consumes the event.
+fn measured_event(event: &fuzzy_dedupe_engine::service::EngineEvent) -> FrameEvents {
+    use fuzzy_dedupe_engine::service::{EngineEvent, ScanEvent};
+    let mut seen = FrameEvents::default();
+    match event {
+        EngineEvent::Comparison { .. } => seen.comparison_ready = true,
+        EngineEvent::Scan { scan, event } => match event {
+            ScanEvent::Started => seen.scan_started = Some(*scan),
+            ScanEvent::Completed(_) => seen.scan_ended = Some(ScanEnd::Completed),
+            ScanEvent::Partial(_) => seen.scan_ended = Some(ScanEnd::Partial),
+            ScanEvent::Progress(_) => {}
+        },
+        EngineEvent::Cleanup { .. } | EngineEvent::NotImplemented { .. } => {}
+    }
+    seen
+}
+
 /// Makes `kind` the current scenario through the facade and replays its
 /// seeded decisions through the review service, so the shell starts on the
 /// review frames' state for the design scenario. Real scans start from New
 /// scan (T16).
 ///
 /// Public so tests can adopt a scenario other than the startup one through
-/// this same path; the app itself calls it once, from [`FuzzyDedupeApp::new`].
+/// this same path; the app itself adopts its startup data once, from
+/// [`FuzzyDedupeApp::new`], through the same body.
 pub fn adopt_scenario(services: &mut Services, state: &mut PresentationState, kind: ScenarioKind) {
+    adopt_startup(services, state, StartupScenario::Fixture(kind));
+}
+
+/// [`adopt_scenario`] for any startup data, the T2 large pair included,
+/// built through [`StartupScenario::build`].
+fn adopt_startup(services: &mut Services, state: &mut PresentationState, startup: StartupScenario) {
     let engine = &mut services.engine;
     let scan = engine.reserve_scan_id();
-    let scenario = match fixtures::build(kind, scan, fixtures::DEFAULT_SEED) {
+    let scenario = match startup.build(scan, fixtures::DEFAULT_SEED) {
         Ok(scenario) => Arc::new(scenario),
         Err(missing) => {
-            tracing::warn!(?missing, ?kind, "scenario unavailable");
+            tracing::warn!(?missing, ?startup, "scenario unavailable");
             return;
         }
     };
@@ -582,7 +649,7 @@ pub fn adopt_scenario(services: &mut Services, state: &mut PresentationState, ki
     // `13:648`), installed here only, after `install_results` has cleared
     // any earlier ones; every other scenario and every scan shows each
     // header's reference name.
-    if kind == ScenarioKind::Design {
+    if startup == StartupScenario::Fixture(ScenarioKind::Design) {
         let sample = fixtures::design::sample();
         state.scan.files_scanned = sample.files_scanned;
         state.scan.finished_at = Some(TimeOfDay {
@@ -675,7 +742,7 @@ pub fn run() -> eframe::Result {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting");
     let result = eframe::run_native(
         APP_TITLE,
-        native_options_for(&preferences::load(&dirs)),
+        native_options_for(&launch_preferences(&dirs, crate::measure::active())),
         Box::new(move |cc| {
             let app = FuzzyDedupeApp::new(&cc.egui_ctx, AppDeps::system(dirs))?;
             Ok(Box::new(app))
