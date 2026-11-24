@@ -1106,10 +1106,23 @@ impl TableDelegate for Delegate<'_> {
         let rect = ui.max_rect();
         self.row_rects.insert(row.id, rect);
         let focused = self.findings.focused == Some(row.id);
+        // A queued member row is filled `code` across the whole row (frames
+        // `13:648`, `29:2214`, `37:2466`); its Queue cell adds redSoft on
+        // top in `checkbox`. Queued is read from `queue_box`, the same test
+        // that checks the box and paints that redSoft, so the row tint and
+        // the cell tint never disagree; a reference row has no box and so
+        // keeps `surface`. Read at draw time, not from the projection: the
+        // projection is cached and need not rebuild when the queue changes.
+        let queued = row.member.is_some_and(|index| {
+            let group = &self.results.groups[row.group];
+            let member = &group.members[index];
+            let view = projections::member_view(group, self.queue, member);
+            projections::queue_box(member, &view, self.queue) == QueueBox::Checked
+        });
         let fill = match (row.member, focused) {
             (_, true) => Token::PrimarySoft,
             (None, false) => Token::Rail,
-            (Some(_), false) if row.context => Token::Code,
+            (Some(_), false) if row.context || queued => Token::Code,
             (Some(_), false) => Token::Surface,
         };
         let painter = ui.painter();
