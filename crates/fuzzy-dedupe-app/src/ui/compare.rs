@@ -117,6 +117,10 @@ pub const REVIEW_UNIQUE_NAME: &str = "Review unique text…";
 
 /// Evidence and change row height (frame `13:1372`, `13:1379`).
 const ROW_HEIGHT: f32 = 28.0;
+/// The candidate stepper arrows' minimum hit-target width; their height is
+/// `CONTROL_HEIGHT`. Measured by `toolbar_need` as well as drawn by
+/// `stepper_arrow`, so the toolbar's fit agrees with what it draws.
+const STEPPER_ARROW_WIDTH: f32 = 24.0;
 /// The pinned file identity's height (frame `13:1410`).
 const IDENTITY_HEIGHT: f32 = 54.0;
 /// Gap between the panes, matching `diff_view`'s own split.
@@ -380,15 +384,39 @@ fn action(ui: &mut Ui, text: &str, id: Id, enabled: bool, palette: &Palette) -> 
     control(ui, button, id, text, enabled)
 }
 
-/// A frameless action (the stepper arrows, ‹ Previous, Next ›).
+/// A frameless action (‹ Previous, Next ›), sized to its label.
 fn plain(ui: &mut Ui, text: &str, name: &str, enabled: bool, palette: &Palette) -> Response {
+    plain_sized(ui, text, name, enabled, palette, 0.0)
+}
+
+/// A candidate stepper arrow: a frameless ‹ or › whose hit target is at
+/// least [`STEPPER_ARROW_WIDTH`] wide, because the glyph alone made a target
+/// about 4 units wide (§11.7: usable hit targets despite compact glyphs).
+fn stepper_arrow(
+    ui: &mut Ui,
+    text: &str,
+    name: &str,
+    enabled: bool,
+    palette: &Palette,
+) -> Response {
+    plain_sized(ui, text, name, enabled, palette, STEPPER_ARROW_WIDTH)
+}
+
+fn plain_sized(
+    ui: &mut Ui,
+    text: &str,
+    name: &str,
+    enabled: bool,
+    palette: &Palette,
+    min_width: f32,
+) -> Response {
     let button = egui::Button::new(styled(
         text,
         CompactStyle::ControlLabel,
         palette.color(Token::Ink),
     ))
     .frame(false)
-    .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
+    .min_size(Vec2::new(min_width, CONTROL_HEIGHT));
     let response = ui.add_enabled(enabled, button);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
     response
@@ -632,9 +660,9 @@ fn toolbar_need(ui: &Ui, view: Option<&CompareView>, fit: ToolbarFit) -> f32 {
                 + text_width(ui, &view.pair_label, CompactStyle::ControlLabel),
             row_width(
                 &[
-                    button_width(ui, "‹"),
+                    button_width(ui, "‹").max(STEPPER_ARROW_WIDTH),
                     text_width(ui, &stepper_label, CompactStyle::Supporting),
-                    button_width(ui, "›"),
+                    button_width(ui, "›").max(STEPPER_ARROW_WIDTH),
                 ],
                 spacing,
             ),
@@ -805,7 +833,7 @@ fn leading(
     }
     let index = view.candidate_index;
     let count = view.candidates.len();
-    let previous = plain(ui, "‹", PREVIOUS_CANDIDATE_NAME, index > 0, palette)
+    let previous = stepper_arrow(ui, "‹", PREVIOUS_CANDIDATE_NAME, index > 0, palette)
         .on_hover_text("Previous candidate (Alt+Left)");
     label(
         ui,
@@ -813,7 +841,7 @@ fn leading(
         CompactStyle::Supporting,
         palette.color(Token::Muted),
     );
-    let next = plain(ui, "›", NEXT_CANDIDATE_NAME, index + 1 < count, palette)
+    let next = stepper_arrow(ui, "›", NEXT_CANDIDATE_NAME, index + 1 < count, palette)
         .on_hover_text("Next candidate (Alt+Right)");
     if cx.input_enabled && previous.clicked() && index > 0 {
         step_candidate(cx, intents, index - 1);

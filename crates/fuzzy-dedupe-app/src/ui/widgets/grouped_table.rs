@@ -38,8 +38,9 @@
 //! the widths drawn are [`fitted_widths`] of the stored ones, which equal
 //! them whenever the table has room, as at 1600 × 960. Below that, File
 //! name and Folder give way first, down to [`FLEX_MINIMUMS`], then every
-//! other column but Queue gives way proportionally down to its own floor,
-//! and only then does the table scroll sideways. The stored widths, which
+//! other column but Queue gives way proportionally down to its own floor
+//! (Group never below its widest label, [`group_label_width`]), and only
+//! then does the table scroll sideways. The stored widths, which
 //! the preferences keep, are never rewritten by fitting: a window made wide
 //! again draws the user's widths again.
 
@@ -65,6 +66,9 @@ pub const HEADER_HEIGHT: f32 = 30.0;
 pub const ROW_HEIGHT: f32 = 28.0;
 /// Horizontal cell padding (frame `13:633`).
 pub const CELL_PAD: f32 = 8.0;
+/// The gap between items inside one cell, as the Group cell's chevron and
+/// label.
+const CELL_GAP: f32 = 6.0;
 /// Below this window width the [`COLLAPSIBLE`] columns hide (spec §11.3
 /// collapse order, step 2). Exactly 1280 keeps them, as for the rail.
 pub const COLLAPSE_BELOW: f32 = 1280.0;
@@ -162,15 +166,20 @@ pub fn column_width(findings: &FindingsState, column: ColumnId) -> f32 {
 
 /// The widths `columns` are drawn at in a table body `room` units wide
 /// (columns plus [`SCROLLBAR_RESERVE`]), in a window `window_width` wide,
-/// in order.
+/// in order. `group_floor` is the narrowest Group may become: the width of
+/// the widest group label in the current results ([`group_label_width`]),
+/// or 0 where no group row is drawn.
 ///
 /// Stage 0: the stored widths, whenever they fit or the window is at least
 /// the 1600-unit reference width, so §11.4's widths hold there exactly
 /// ("only below the reference width" do columns give way). Stage 1: File
 /// name and Folder shrink in proportion to their excess over
 /// [`FLEX_MINIMUMS`]. Stage 2: every column but Queue shrinks in proportion
-/// to its excess over [`SECOND_STAGE_FLOOR`] of its stored width. Past that
-/// the widths stay at their floors and the body scrolls sideways (at
+/// to its excess over [`SECOND_STAGE_FLOOR`] of its stored width, except
+/// that Group stops at `group_floor`: below it "G002 (3)" and "G004 (3)"
+/// both elide to "G00…" and group identity is lost, so the other columns
+/// absorb the difference instead. Past that the widths stay at their
+/// floors and the body scrolls sideways (at
 /// 1024 × 600 under 200% zoom no readable set of the always-shown columns
 /// fits 440 points). Rejected: shrinking every column from the start, which
 /// would move the evidence columns before the two §11.4 names as flexible.
@@ -180,6 +189,7 @@ pub fn fitted_widths(
     columns: &[ColumnId],
     room: f32,
     window_width: f32,
+    group_floor: f32,
 ) -> Vec<f32> {
     let stored: Vec<f32> = columns.iter().map(|c| column_width(findings, *c)).collect();
     let target = (room - SCROLLBAR_RESERVE).max(0.0);
@@ -222,14 +232,89 @@ pub fn fitted_widths(
         if c == ColumnId::Queue {
             None
         } else {
-            Some(
-                flex_floor(c, stored[i])
-                    .unwrap_or(stored[i] * SECOND_STAGE_FLOOR)
-                    .min(first[i]),
-            )
+            let share = flex_floor(c, stored[i]).unwrap_or(stored[i] * SECOND_STAGE_FLOOR);
+            let floor = if c == ColumnId::Group {
+                share.max(group_floor)
+            } else {
+                share
+            };
+            Some(floor.min(first[i]))
         }
     };
     stage(&first, &floor, total - target)
+}
+
+/// The width a Group cell needs to show its widest content whole: the cell
+/// padding, the chevron, the gap after it and the widest group label in
+/// `results` (or the "Group" title, if wider), at the fonts `header_cell`
+/// and `header_title` draw with. The floor [`fitted_widths`] keeps Group at.
+///
+/// Every group counts, not only the visible or filtered ones, so the width
+/// does not jump as the user scrolls, searches or filters. The `large`
+/// scenario has 100,000 groups, so labels are ranked by the sum of their
+/// glyph advances, which needs no layout, and only the widest is laid out;
+/// the result is cached per results value and scale.
+#[must_use]
+pub fn group_label_width(ui: &Ui, results: &Arc<ScanResults>) -> f32 {
+    #[derive(Clone)]
+    struct Cached {
+        results: std::sync::Weak<ScanResults>,
+        pixels_per_point: f32,
+        width: f32,
+    }
+    let id = Id::unique("fd.findings.group_label_width");
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let hit = ui.ctx().data(|d| {
+        d.get_temp::<Cached>(id).filter(|c| {
+            c.pixels_per_point.to_bits() == pixels_per_point.to_bits()
+                && std::ptr::eq(c.results.as_ptr(), Arc::as_ptr(results))
+                && c.results.strong_count() > 0
+        })
+    });
+    if let Some(cached) = hit {
+        return cached.width;
+    }
+    let font = CompactStyle::GroupEmphasis.font_id();
+    let widest = ui.ctx().fonts_mut(|fonts| {
+        results
+            .groups
+            .iter()
+            .map(|group| {
+                let text = projections::group_label(group);
+                let advance: f32 = text.chars().map(|c| fonts.glyph_width(&font, c)).sum();
+                (advance, text)
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, text)| text)
+    });
+    let measure = |text: String, font: egui::FontId| {
+        ui.painter()
+            .layout_no_wrap(text, font, egui::Color32::WHITE)
+            .size()
+            .x
+    };
+    let chevron = [Icon::Expanded, Icon::Collapsed]
+        .into_iter()
+        .filter_map(|icon| glyphs::text(ui.ctx(), icon))
+        .map(|text| measure(text, CompactStyle::Table.font_id()))
+        .fold(0.0, f32::max);
+    let name = widest.map_or(0.0, |text| measure(text, font.clone()));
+    let title = measure(column_title(ColumnId::Group).to_owned(), font);
+    // `padded`'s horizontal padding and item spacing; the extra unit
+    // absorbs layout rounding, without which a label measured exactly at
+    // its width can still elide.
+    let width = 2.0 * CELL_PAD + (chevron + CELL_GAP + name).max(title) + 1.0;
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(
+            id,
+            Cached {
+                results: Arc::downgrade(results),
+                pixels_per_point,
+                width,
+            },
+        );
+    });
+    width
 }
 
 /// The header row alone, across the top of `ui`'s remaining rect, for the
@@ -247,6 +332,7 @@ pub fn header_strip(ui: &mut Ui, findings: &FindingsState) -> Rect {
         &columns,
         region.width(),
         ui.ctx().content_rect().width(),
+        0.0,
     );
     ui.painter()
         .rect_filled(strip, 0.0, palette.color(Token::Code));
@@ -397,6 +483,7 @@ pub fn show(
         &columns,
         outer.width() - 2.0 * theme::BORDER_WIDTH,
         window_width,
+        group_label_width(ui, &results),
     );
 
     let mut actions = Vec::new();
@@ -457,6 +544,7 @@ pub fn show(
                 // hovered and dragged strokes stay, so a resize handle
                 // still shows where it can be grabbed.
                 ui.visuals_mut().widgets.noninteractive.bg_stroke = Stroke::NONE;
+                table_scrollbar(ui, palette);
                 let state_id = table.get_id(ui);
                 write_widths(ui, state_id, &columns, &widths);
                 table.show(ui, &mut delegate);
@@ -494,6 +582,36 @@ pub fn show(
     } else {
         None
     }
+}
+
+/// Styles the scroll bars of the scroll area `egui_table` creates inside
+/// `ui`: frame `13:648` shows the vertical bar at rest, a `quiet` thumb on a
+/// `code` track inside the [`SCROLLBAR_RESERVE`].
+///
+/// egui's default floating style keeps the bar hidden until the pointer
+/// hovers it, and `egui_table` exposes no scroll-area setting, so the table
+/// draws inside a `Ui` whose scroll style is solid (opaque at rest). The
+/// solid bar's 4 + 6 + 3 units fit the 14-unit reserve, so the columns,
+/// which leave exactly the reserve free, never trigger sideways scrolling.
+/// Like any egui bar it shows only while the rows overflow the body: with
+/// nothing to scroll there is no thumb to show.
+///
+/// SCOPE: `ui` is the table's own scope. The thumb colour is egui's
+/// `inactive.fg_stroke` and the track `extreme_bg_color`; nothing in the
+/// table reads either (its cells paint with palette colours), and setting
+/// them on the theme instead would restyle every other scroll area and
+/// text field.
+fn table_scrollbar(ui: &mut Ui, palette: &Palette) {
+    ui.spacing_mut().scroll = egui::style::ScrollStyle {
+        bar_width: 6.0,
+        bar_inner_margin: 4.0,
+        bar_outer_margin: 3.0,
+        foreground_color: true,
+        ..egui::style::ScrollStyle::solid()
+    };
+    let visuals = ui.visuals_mut();
+    visuals.extreme_bg_color = palette.color(Token::Code);
+    visuals.widgets.inactive.fg_stroke.color = palette.color(Token::Quiet);
 }
 
 /// Shows [`full_path`] for the focused row when it is a visible member row.
@@ -955,7 +1073,7 @@ fn padded(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.set_clip_rect(rect.intersect(ui.clip_rect()));
-            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.spacing_mut().item_spacing.x = CELL_GAP;
             add(ui);
         },
     );

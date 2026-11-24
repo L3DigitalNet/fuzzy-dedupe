@@ -68,6 +68,7 @@ mod snapshots {
     };
     use fuzzy_dedupe_app::presentation::{events, projections};
     use fuzzy_dedupe_app::ui::dialogs::new_scan;
+    use fuzzy_dedupe_app::ui::theme;
     use fuzzy_dedupe_domain::{CompareMode, MemberRole, QueueOrigin, ScanFolder, ScanSetup};
     use fuzzy_dedupe_engine::cleanup_sim::CleanupEvent;
     use fuzzy_dedupe_engine::fixtures::design;
@@ -98,7 +99,12 @@ mod snapshots {
     /// The egui input time, in seconds, of every captured frame. Far beyond
     /// any time a preparation reaches at kittest's 0.25 s step (it would
     /// need 4,000 steps), so pinning it never moves time backwards.
-    const CAPTURE_TIME: f64 = 1000.0;
+    ///
+    /// 1000.8 is half a 1.6 s sweep past a whole number of sweeps, so 01b's
+    /// progress segment sits mid-track (`findings::progress_track`). 1000.0
+    /// is exactly 625 sweeps: phase 0, with the segment wholly left of the
+    /// track, which frame `28:2171`'s captures then never showed.
+    const CAPTURE_TIME: f64 = 1000.8;
 
     const REFERENCE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/design/reference");
 
@@ -572,14 +578,50 @@ mod snapshots {
         s.scan.progress = Some(sample.scan_progress);
         s.findings.revision += 1;
         // The animated progress bar never settles; a fixed number of
-        // frames draws the scanning view.
+        // frames draws the scanning view, at the capture's own time so the
+        // segment checked here is the one captured.
+        h.input_mut().time = Some(CAPTURE_TIME);
         h.run_steps(4);
         assert_shown(h, "Scanning…");
+        assert_segment_on_track(h);
         assert!(state(h).scan.results.is_none(), "results cleared");
         let review = h.get_by_role_and_label(Role::Button, "Review cleanup (0)");
         assert!(
             review.accesskit_node().is_disabled(),
             "Review cleanup (0) is enabled"
+        );
+    }
+
+    /// The 01b progress segment is painted on the track, in `primary`, at
+    /// least a quarter of the track wide: visibly moving, not parked off
+    /// the track at a sweep boundary.
+    fn assert_segment_on_track(h: &Shell) {
+        fn walk(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Rect(r) => out.push(r.clone()),
+                _ => {}
+            }
+        }
+        let track = h.get_by_label("Scan progress").rect();
+        let mode = match h.ctx.theme() {
+            Theme::Light => theme::Mode::Light,
+            Theme::Dark => theme::Mode::Dark,
+        };
+        let primary = theme::palette(mode).color(theme::Token::Primary);
+        let mut rects = Vec::new();
+        for clipped in &h.output().shapes {
+            walk(&clipped.shape, &mut rects);
+        }
+        let shown = rects
+            .iter()
+            .filter(|r| r.fill == primary)
+            .map(|r| r.rect.intersect(track).width())
+            .fold(0.0, f32::max);
+        assert!(
+            shown >= track.width() / 4.0,
+            "the progress segment shows {shown} of the {} track",
+            track.width()
         );
     }
 

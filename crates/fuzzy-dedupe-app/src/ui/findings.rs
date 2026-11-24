@@ -70,6 +70,9 @@ const SEARCH_TEXT_INSET: i8 = 6;
 /// Filter-chip padding and spacing: the chip component's 6-unit padding
 /// and the frame's 6-unit gap between chips (frames `13:648`, `30:2370`).
 const CHIP_PAD: f32 = 6.0;
+/// The padding every chip narrows to when the row does not fit at
+/// [`CHIP_PAD`] (1024 × 600 at 200%: 432 of 440 points instead of 452).
+const CHIP_PAD_NARROW: f32 = 4.0;
 const CHIP_SPACING: f32 = 6.0;
 /// The scanning progress track (frame `28:2171`) and its indeterminate
 /// segment's share of it.
@@ -717,11 +720,12 @@ fn message_action_id() -> Id {
 /// The filter row: one chip per relation type with its count, then the
 /// discovery-problem notice and the measurement statement at the end.
 ///
-/// Width rule (F3, F4): chips are laid out first at their full padding.
+/// Width rule (F3, F4, T41): chips are laid out first at the frame's
+/// padding, and at the narrow padding when the row overruns at it.
 /// The statement shows only when it fits whole after the chips and the
 /// notice, and otherwise hides: elided, "Match and Unique are…" says
 /// nothing. The notice is actionable, so it outlasts the statement; when
-/// the chips and the notice alone overrun the row (1024 × 600 at 200%),
+/// the chips and the notice alone overrun the row even at the narrow padding,
 /// they scroll sideways in the row instead of overprinting, and a chip that
 /// takes keyboard focus scrolls itself into view.
 fn filter_row(
@@ -754,13 +758,8 @@ fn filter_row(
             .size()
             .x
     };
-    let chips_width: f32 = chips
-        .iter()
-        .map(|(label, _)| {
-            measure(ui, label, CompactStyle::ControlLabel) + 2.0 * CHIP_PAD + 1.0 + CHIP_SPACING
-        })
-        .sum::<f32>()
-        - CHIP_SPACING;
+    let label_widths = chip_label_widths(ui, &chips);
+    let row_at = |pad: f32| chip_row_width(&label_widths, pad);
     let issues = cx.scan.issues.len();
     let notice_width = if issues > 0 {
         measure(ui, &issues_notice(ui, issues), CompactStyle::Supporting)
@@ -771,6 +770,16 @@ fn filter_row(
     };
     let caption_width = measure(ui, MEASURED_NOTE, CompactStyle::Supporting);
     let row_width = ui.available_width();
+    // The frame's padding whenever the row fits at it; otherwise every chip
+    // narrows to CHIP_PAD_NARROW together (one chip narrower than the rest
+    // would read as a different control), and only a row that overruns
+    // even then scrolls.
+    let chip_pad = if row_at(CHIP_PAD) + notice_width <= row_width {
+        CHIP_PAD
+    } else {
+        CHIP_PAD_NARROW
+    };
+    let chips_width = row_at(chip_pad);
     let fits = chips_width + notice_width <= row_width;
     let show_caption = chips_width + notice_width + CHIP_SPACING + caption_width <= row_width;
 
@@ -779,7 +788,7 @@ fn filter_row(
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.spacing_mut().item_spacing.x = CHIP_SPACING;
-            ui.spacing_mut().button_padding.x = CHIP_PAD;
+            ui.spacing_mut().button_padding.x = chip_pad;
             // Before the first scan there is nothing to filter or measure
             // (frame `28:1399`): the chips are disabled and, with the
             // caption, drawn faded by the disabled `Ui`. Only this row is
@@ -840,10 +849,8 @@ fn chip(
         (false, true) => Token::Ink,
         (false, false) => Token::Muted,
     };
-    let text = egui::RichText::new(label)
-        .text_style(CompactStyle::ControlLabel.text_style())
-        .color(palette.color(ink));
-    let mut chip = egui::Button::new(text).min_size(Vec2::new(0.0, CHIP_HEIGHT));
+    let mut chip = egui::Button::new(chip_text(label, palette.color(ink)))
+        .min_size(Vec2::new(0.0, CHIP_HEIGHT));
     // An unselected chip keeps its frame, unfilled and unstroked, so it
     // keeps the button padding: a frameless egui button drops it, and the
     // chips then packed against each other's labels.
@@ -861,6 +868,43 @@ fn chip(
     if cx.input_enabled && response.clicked() {
         cx.findings.match_filter = filter;
     }
+}
+
+/// Each chip's label width, laid out exactly as `chip` lays it out (the
+/// same rich text, as a button's text), so the fit `filter_row` decides is
+/// the width the buttons draw.
+fn chip_label_widths(ui: &Ui, chips: &[(String, Option<RelationKind>)]) -> Vec<f32> {
+    chips
+        .iter()
+        .map(|(label, _)| {
+            egui::WidgetText::from(chip_text(label, egui::Color32::WHITE))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Button,
+                )
+                .size()
+                .x
+        })
+        .collect()
+}
+
+/// The chip row's width at padding `pad`: each label plus twice its
+/// padding, with `CHIP_SPACING` between chips.
+fn chip_row_width(label_widths: &[f32], pad: f32) -> f32 {
+    label_widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| w + 2.0 * pad + if i > 0 { CHIP_SPACING } else { 0.0 })
+        .sum()
+}
+
+/// A chip's label as drawn; `filter_row` measures the same text.
+fn chip_text(label: &str, color: egui::Color32) -> egui::RichText {
+    egui::RichText::new(label)
+        .text_style(CompactStyle::ControlLabel.text_style())
+        .color(color)
 }
 
 /// "⚠ 3 files could not be read".
@@ -1030,10 +1074,15 @@ fn scanning(ui: &mut Ui, cx: &WorkspaceCx<'_>, intents: &mut IntentQueue, palett
                 .color(palette.color(Token::Ink)),
             );
             if let Some(progress) = progress {
+                // The Folder column's display form ("…/Archive/", frame
+                // `28:2171`); the progress keeps the engine's own string.
                 ui.label(
-                    egui::RichText::new(format!("Reading files in {}", progress.current_folder))
-                        .text_style(CompactStyle::PathDetail.text_style())
-                        .color(palette.color(Token::Muted)),
+                    egui::RichText::new(format!(
+                        "Reading files in {}",
+                        projections::folder_label(&progress.current_folder)
+                    ))
+                    .text_style(CompactStyle::PathDetail.text_style())
+                    .color(palette.color(Token::Muted)),
                 );
             }
             progress_track(ui, palette, !stopping);

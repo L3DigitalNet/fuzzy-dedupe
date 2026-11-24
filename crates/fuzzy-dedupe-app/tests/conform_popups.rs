@@ -501,6 +501,40 @@ mod conform_popups {
 
     // ── P8: Review unique text ───────────────────────────────────────────
 
+    /// T41 item 5, frame `16:932`: both identities show their folder with
+    /// the trailing "/" the Findings Folder column shows.
+    #[test]
+    fn conform_unique_text_folders_keep_the_trailing_slash() {
+        let mut h = launch("unique-slash", SIZES[0]);
+        open_unique_text(&mut h);
+        let results = state(&h).scan.results.clone().expect("results");
+        let target = results
+            .groups
+            .iter()
+            .flat_map(|g| g.members.iter())
+            .find(|m| m.name == "Design_Spec_draft.txt")
+            .expect("the design scenario's fuzzy row");
+        let MemberRole::Member(link) = target.role else {
+            panic!("the fuzzy row is a member");
+        };
+        let counterpart = results
+            .groups
+            .iter()
+            .flat_map(|g| g.members.iter())
+            .find(|m| m.file == link.counterpart)
+            .expect("the counterpart");
+        for (who, folder) in [
+            ("target", &target.folder),
+            ("counterpart", &counterpart.folder),
+        ] {
+            let shown = format!("{}/", folder.trim_end_matches('/'));
+            assert!(
+                h.query_by_label(&shown).is_some(),
+                "the {who}'s folder does not show as {shown:?}"
+            );
+        }
+    }
+
     /// The acknowledgment's painted square: the filled square rectangle
     /// at the left of the checkbox widget. A focus ring has no fill, so it
     /// is never taken for the box.
