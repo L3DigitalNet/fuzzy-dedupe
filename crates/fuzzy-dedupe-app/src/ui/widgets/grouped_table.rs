@@ -1262,7 +1262,20 @@ impl Delegate<'_> {
             ColumnId::Group if row.context => plain(self, "Context".to_owned(), Token::Quiet),
             ColumnId::Group => return,
             ColumnId::Match => plain(self, projections::match_label(group, &view), Token::Ink),
-            ColumnId::Unique => plain(self, projections::unique_label(&view), Token::Muted),
+            ColumnId::Unique => {
+                // A count paints `amber`, the §11.7 recoverable-caution
+                // role (frames `13:648`, `29:2214`, `37:2466`, `44:3954`):
+                // it mirrors the owner's gate that Review unique text
+                // applies only when Unique > 0. Read from the numeric
+                // count, not the label, so the colour and `unique_label`'s
+                // "—" for None or zero cannot drift apart.
+                let token = if view.unique.is_some_and(|n| n > 0) {
+                    Token::Amber
+                } else {
+                    Token::Muted
+                };
+                plain(self, projections::unique_label(&view), token)
+            }
             ColumnId::FileName => {
                 // The reference row carries the anchor and a bold name
                 // (frame `13:648`); `member_view` names the current
