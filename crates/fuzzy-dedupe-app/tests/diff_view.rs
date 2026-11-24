@@ -34,6 +34,7 @@ mod diff_view {
     use fuzzy_dedupe_app::presentation::state::{
         ComparePair, CompareState, ComparisonSlot, PaneSelection, TextPosition,
     };
+    use fuzzy_dedupe_app::ui::glyphs;
     use fuzzy_dedupe_app::ui::theme::{self, CompactStyle};
     use fuzzy_dedupe_app::ui::widgets::diff_view;
     use fuzzy_dedupe_domain::{CompareMode, FileId, GroupId, SnapshotId};
@@ -284,6 +285,7 @@ mod diff_view {
                 },
             );
         theme::install(&harness.ctx, Vec::new());
+        glyphs::install(&harness.ctx);
         harness.state_mut().themed = true;
         harness.run();
         harness

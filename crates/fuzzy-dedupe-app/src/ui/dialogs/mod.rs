@@ -102,7 +102,38 @@ impl DialogDraft {
         }
     }
 
-    /// Draws the popup's body and footer.
+    /// The popup's initial size this frame, in units, beside [`Self::title`]:
+    /// the popup's [`DialogKind::reference_size`], except New scan, which
+    /// is 640 × 778 while its matching rules are expanded (spec §11.6). The
+    /// dialog host shrinks it to the viewport, so it is never a minimum.
+    #[must_use]
+    pub fn size(&self, kind: DialogKind) -> [f32; 2] {
+        match self {
+            Self::NewScan(draft) => new_scan::size(draft),
+            _ => kind.reference_size(),
+        }
+    }
+
+    /// Whether the popup draws its action footer through [`Self::footer`],
+    /// which the dialog host pins below the scrolling body. The others draw
+    /// their footer at the end of [`Self::show`], where it scrolls with the
+    /// body when the viewport is too small for it.
+    #[must_use]
+    pub const fn has_pinned_footer(&self) -> bool {
+        matches!(self, Self::NewScan(_))
+    }
+
+    /// Draws the pinned action footer of a popup with
+    /// [`Self::has_pinned_footer`]; draws nothing for any other.
+    pub fn footer(&mut self, ui: &mut egui::Ui, cx: &mut DialogCx<'_>) -> DialogResponse {
+        match self {
+            Self::NewScan(draft) => new_scan::footer(ui, draft, cx),
+            _ => DialogResponse::KeepOpen,
+        }
+    }
+
+    /// Draws the popup's body, and its footer unless it is pinned (see
+    /// [`Self::has_pinned_footer`]).
     pub fn show(&mut self, ui: &mut egui::Ui, cx: &mut DialogCx<'_>) -> DialogResponse {
         match self {
             Self::MatchingRules(draft) => matching_rules::show(ui, draft, cx),

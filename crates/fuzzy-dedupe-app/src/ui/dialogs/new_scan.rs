@@ -6,7 +6,10 @@
 //!
 //! The dialog host (`ui/widgets/dialog_host.rs`) owns the title row, the close
 //! control, Esc, Enter, sizing and focus restoration; this file draws the body
-//! and footer inside the 16-unit content inset. Enter runs Start scan.
+//! ([`show`]) and the footer ([`footer`]) inside the 16-unit content inset, and
+//! names the popup's size ([`size`]). The host pins the footer below the body,
+//! which scrolls when the popup is shrunk to a small viewport (spec §11.6
+//! "keep the action footer reachable"). Enter runs Start scan.
 //!
 //! The [`Draft`] holds the folders with their Protect files flags, the file
 //! types and a matching-rules draft (`matching_rules::RulesDraft`, the same
@@ -40,7 +43,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use egui::{Align, Layout, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{Align, Id, Layout, RichText, Sense, Stroke, Ui, Vec2};
 use fuzzy_dedupe_domain::{ScanFolder, ScanSetup};
 use fuzzy_dedupe_engine::fixtures;
 use fuzzy_dedupe_engine::service::{EngineRequest, ReviewCommand, StartScan};
@@ -48,15 +51,21 @@ use fuzzy_dedupe_platform::picker::PickRequest;
 
 use crate::presentation::commands::UiIntent;
 use crate::presentation::projections::thousands;
+use crate::presentation::state::DialogKind;
 use crate::ui::dialogs::matching_rules::{
     self, RulesDraft, action_row, check_box, primary_button, secondary_button,
 };
 use crate::ui::dialogs::{DialogCx, DialogResponse};
+use crate::ui::glyphs;
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 
 /// The message beside a folder that was not found.
 pub const MISSING_FOLDER: &str = "Folder not found. Remove it or choose another folder.";
+
+/// The popup's size with the matching rules expanded (spec §11.6, frame
+/// `36:2435`); collapsed, it is `DialogKind::NewScan`'s reference size.
+pub const EXPANDED_SIZE: [f32; 2] = [640.0, 778.0];
 
 /// File types the summary lists before "+N more", as in `26:1338`.
 const SHOWN_FILE_TYPES: usize = 6;
@@ -123,8 +132,8 @@ fn folder_exists(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
 }
 
-/// Draws the body and footer. Returns [`DialogResponse::Close`] when a
-/// footer action closed the popup.
+/// Draws the body; [`footer`] draws the actions. Never closes the popup
+/// itself: only the footer and the host's ×, Esc and Enter do.
 pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
     let draft = &mut *draft.form;
     if let Some(picked) = cx.picked_folders.take() {
@@ -165,6 +174,27 @@ pub fn show(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResp
         );
     }
 
+    DialogResponse::KeepOpen
+}
+
+/// The popup's initial size: its reference size, or that of `36:2435`
+/// while the matching rules are expanded (spec §11.6). The dialog host
+/// shrinks either to the viewport.
+#[must_use]
+pub fn size(draft: &Draft) -> [f32; 2] {
+    if draft.form.rules_expanded {
+        EXPANDED_SIZE
+    } else {
+        DialogKind::NewScan.reference_size()
+    }
+}
+
+/// Cancel and Start scan, in the footer slot the dialog host pins below the
+/// scrolling body, so both stay visible however far the body scrolls.
+/// Returns [`DialogResponse::Close`] when either closed the popup.
+pub fn footer(ui: &mut Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> DialogResponse {
+    let draft = &mut *draft.form;
+    let palette = theme::palette(mode_of(ui.ctx()));
     let mut response = DialogResponse::KeepOpen;
     action_row(ui, |ui| {
         if primary_button(ui, "Start scan", palette).clicked() {
@@ -467,7 +497,7 @@ fn rules_section(ui: &mut Ui, draft: &mut Form, palette: &Palette) {
     } else {
         Icon::Collapsed
     };
-    let header = ui
+    let row = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             // Not selectable: a selectable label senses clicks itself and
@@ -475,7 +505,7 @@ fn rules_section(ui: &mut Ui, draft: &mut Form, palette: &Palette) {
             let text = |ui: &mut Ui, text: RichText| {
                 ui.add(egui::Label::new(text).selectable(false));
             };
-            match matching_rules::glyph(ui.ctx(), chevron) {
+            match glyphs::text(ui.ctx(), chevron) {
                 Some(icon) => text(
                     ui,
                     RichText::new(icon)
@@ -500,7 +530,12 @@ fn rules_section(ui: &mut Ui, draft: &mut Form, palette: &Palette) {
             );
         })
         .response
-        .interact(Sense::click());
+        .rect;
+    // A widget of its own with a fixed ID, not `.interact` on the row's
+    // response: with that, Tab from Edit… left egui with no focused widget
+    // and the next Tab restarted at the title bar's ×, so the keyboard never
+    // reached the rules controls or the footer.
+    let header = ui.interact(row, Id::unique("fd.new_scan.rules_header"), Sense::click());
     let expanded = draft.rules_expanded;
     header.widget_info(|| {
         egui::WidgetInfo::selected(egui::Role::Button, true, expanded, "Matching rules section")

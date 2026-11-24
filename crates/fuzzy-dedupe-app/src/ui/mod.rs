@@ -12,6 +12,7 @@
 pub mod compare;
 pub mod dialogs;
 pub mod findings;
+pub mod glyphs;
 pub mod shell;
 pub mod theme;
 pub mod widgets;

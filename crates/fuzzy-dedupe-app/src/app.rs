@@ -56,9 +56,9 @@ use crate::presentation::preferences;
 use crate::presentation::state::{
     PreferencesState, PresentationState, ScanStage, ThemeOverride, TimeOfDay, WindowPreference,
 };
-use crate::ui::shell;
 use crate::ui::theme::{self, Zoom};
 use crate::ui::widgets::dialog_host;
+use crate::ui::{glyphs, shell};
 
 /// The native window title (spec §11.3); the app draws no title bar itself.
 pub const APP_TITLE: &str = "Fuzzy DeDupe";
@@ -334,7 +334,8 @@ impl FuzzyDedupeApp {
             .map(|font| (font.family, egui::FontData::from_owned(font.data)))
             .collect();
         theme::install(ctx, fallbacks);
-        shell::install_icon_glyphs(ctx);
+        // Before the first pass, so every icon draws on the first frame.
+        glyphs::install(ctx);
 
         let mut state = PresentationState {
             preferences: preferences::load(&dirs),

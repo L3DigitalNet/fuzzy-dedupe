@@ -36,7 +36,7 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, Id, Margin, RichText, Stroke, Vec2};
+use egui::{Color32, Margin, RichText, Stroke, Vec2};
 use fuzzy_dedupe_domain::{FileId, Group, QueueScope, ScanId, ScanResults};
 use fuzzy_dedupe_engine::review::{IdenticalForecast, forecast as eligibility};
 use fuzzy_dedupe_engine::service::ReviewCommand;
@@ -44,6 +44,7 @@ use fuzzy_dedupe_engine::service::ReviewCommand;
 use crate::presentation::commands::UiIntent;
 use crate::presentation::state::{DialogSubject, QueueState};
 use crate::ui::dialogs::{DialogCx, DialogResponse};
+use crate::ui::glyphs;
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host;
 
@@ -150,7 +151,7 @@ pub fn show(ui: &mut egui::Ui, draft: &mut Draft, cx: &mut DialogCx<'_>) -> Dial
             ui.spacing_mut().item_spacing.y = 4.0;
             for rule in RULES {
                 ui.horizontal(|ui| {
-                    icon(ui, Icon::Check, CHECK_GLYPH, palette.color(Token::Green));
+                    icon(ui, Icon::Check, palette.color(Token::Green));
                     ui.label(text(rule, CompactStyle::Table, palette, Token::Ink));
                 });
             }
@@ -316,59 +317,19 @@ pub(crate) fn text(s: &str, style: CompactStyle, palette: &Palette, token: Token
         .color(palette.color(token))
 }
 
-/// Private-use code points for the popups' tinted icons. Cross-file
-/// contract: `ui/shell.rs` `GLYPHS` holds U+E100 to U+E103; these stay
-/// outside that run so neither registration replaces the other's glyph
-/// (egui keys a glyph rasterizer by its text).
-pub(crate) const CHECK_GLYPH: char = '\u{E170}';
-pub(crate) const ALERT_GLYPH: char = '\u{E171}';
-
-/// Draws `icon` 14 units high in `color`, as glyph `ch`.
+/// Draws `icon` 14 units high in `color`, through the glyph registry
+/// ([`glyphs::text`]).
 ///
-/// A glyph, not an image, so it takes a token colour: Lucide's
-/// `currentColor` rasterizes black and egui's image tint only multiplies
-/// (see the note above the icon table in `theme.rs`). The glyph is
-/// registered on first use, once per context, and egui activates a glyph
-/// rasterizer only from the next pass; laying the character out in the
-/// registering pass panics under egui's missing-glyph policy. That pass
-/// therefore reserves the icon's space and asks for a repaint. An icon
-/// whose SVG fails to parse is logged and never drawn.
-pub(crate) fn icon(ui: &mut egui::Ui, icon: Icon, ch: char, color: Color32) {
+/// A glyph, not an image, so it takes a token colour (`ui/glyphs.rs`). An
+/// icon the registry cannot draw (not installed on this context, or its
+/// SVG failed to parse) reserves its space and is never drawn.
+pub(crate) fn icon(ui: &mut egui::Ui, icon: Icon, color: Color32) {
     const SIZE: f32 = 14.0;
-    let ctx = ui.ctx().clone();
-    let id = Id::unique(("fd.dialog_glyph", ch));
-    let pass = ctx.cumulative_pass_nr();
-    // The pass the glyph was registered in; `u64::MAX` marks one that
-    // failed to parse and must never be laid out.
-    let ready = if let Some(at) = ctx.data(|d| d.get_temp::<u64>(id)) {
-        at < pass
-    } else {
-        let at = register_glyph(&ctx, icon, ch).map_or(u64::MAX, |()| pass);
-        ctx.data_mut(|d| d.insert_temp(id, at));
-        false
-    };
-    if ready {
-        ui.label(RichText::new(ch.to_string()).size(SIZE).color(color));
-    } else {
-        ui.add_space(SIZE);
-    }
-}
-
-fn register_glyph(ctx: &egui::Context, icon: Icon, ch: char) -> Option<()> {
-    match egui_extras::SvgGlyph::from_bytes(icon.bytes()) {
-        Ok(svg) => {
-            ctx.add_glyph_rasterizer(
-                svg.with_color(false)
-                    .with_baseline_offset(-0.2)
-                    .into_rasterizer(ch.to_string()),
-            );
-            ctx.request_repaint();
-            Some(())
+    match glyphs::text(ui.ctx(), icon) {
+        Some(glyph) => {
+            ui.label(RichText::new(glyph).size(SIZE).color(color));
         }
-        Err(err) => {
-            tracing::warn!(icon = icon.lucide_name(), %err, "icon glyph not loaded");
-            None
-        }
+        None => ui.add_space(SIZE),
     }
 }
 

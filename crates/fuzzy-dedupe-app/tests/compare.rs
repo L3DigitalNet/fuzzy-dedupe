@@ -35,7 +35,7 @@ mod compare_workspace {
         ColumnId, MenuKind, PresentationState, RowId, SortKey, WorkspaceState,
     };
     use fuzzy_dedupe_app::ui::widgets::dialog_host;
-    use fuzzy_dedupe_app::ui::{shell, theme};
+    use fuzzy_dedupe_app::ui::{glyphs, shell, theme};
     use fuzzy_dedupe_domain::{
         FileId, GroupId, MemberDecision, QueueOrigin, Refusal, RelationKind, ScanResults,
     };
@@ -182,7 +182,7 @@ mod compare_workspace {
         }
         let mut harness = builder.build_ui_state(|ui, rig: &mut Rig| rig.frame(ui), rig);
         theme::install(&harness.ctx, Vec::new());
-        shell::install_icon_glyphs(&harness.ctx);
+        glyphs::install(&harness.ctx);
         harness.state_mut().ready = true;
         settle(&mut harness);
         harness

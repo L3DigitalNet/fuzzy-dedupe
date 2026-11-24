@@ -21,7 +21,7 @@ mod form_popups {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use egui::accesskit::{Role, Toggled};
-    use egui::{Event, Key, Modifiers, Vec2};
+    use egui::{Event, Key, Modifiers, Rect, Vec2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
     use fuzzy_dedupe_app::app::{AppDeps, Clock, FuzzyDedupeApp};
@@ -33,7 +33,8 @@ mod form_popups {
     };
     use fuzzy_dedupe_app::ui::dialogs::{DialogCx, DialogResponse, new_scan};
     use fuzzy_dedupe_domain::{
-        MatchMode, MatchingRules, MemberDecision, Permille, ScanFolder, ScanSetup,
+        MatchMode, MatchingRules, MemberDecision, MemberRole, Permille, QueueOrigin, QueueScope,
+        ScanFolder, ScanSetup,
     };
     use fuzzy_dedupe_engine::service::{EngineConfig, EngineRequest, ReviewCommand};
     use fuzzy_dedupe_platform::dirs::AppDirs;
@@ -130,6 +131,10 @@ mod form_popups {
     }
 
     fn launch(name: &str) -> (Shell, FakePicker) {
+        launch_sized(name, Vec2::new(1600.0, 960.0))
+    }
+
+    fn launch_sized(name: &str, size: Vec2) -> (Shell, FakePicker) {
         let picker = FakePicker::default();
         let deps = AppDeps {
             dirs: dirs_for(name),
@@ -143,7 +148,7 @@ mod form_popups {
         };
         let mut harness = Harness::builder()
             .with_max_steps(SETTLE_STEPS)
-            .with_size(Vec2::new(1600.0, 960.0))
+            .with_size(size)
             .build_ui_state(
                 |ui, slot: &mut Slot| {
                     if let Some(app) = slot.app.as_mut() {
@@ -769,5 +774,175 @@ mod form_popups {
             "removing a folder changed only the setup"
         );
         assert!(crate_dir("").join("src").is_dir(), "no source file touched");
+    }
+
+    // ── PV-T34-001: per-dialog size and the pinned New scan footer ──────
+
+    /// The painted popup: the area of egui's top modal layer, which the
+    /// dialog host's frame fills exactly (its border included).
+    fn popup_rect(h: &Shell) -> Rect {
+        h.ctx.memory(|memory| {
+            let layer = memory.top_modal_layer().expect("a popup is drawn");
+            memory.area_rect(layer.id).expect("the popup's area")
+        })
+    }
+
+    #[track_caller]
+    fn assert_size(h: &Shell, expected: [f32; 2], what: &str) {
+        let size = popup_rect(h).size();
+        assert!(
+            (size.x - expected[0]).abs() < 0.5 && (size.y - expected[1]).abs() < 0.5,
+            "{what}: popup is {size:?}, expected {expected:?}"
+        );
+    }
+
+    fn rect_of(h: &Shell, role: Role, label: &str) -> Rect {
+        h.get_by_role_and_label(role, label).rect()
+    }
+
+    fn push(h: &mut Shell, intent: UiIntent) {
+        h.state_mut().app.as_mut().expect("app").push_intent(intent);
+        settle(h);
+    }
+
+    /// The last line of New scan's body before its replace warning.
+    const PROTECTED_NOTE: &str = "Protected folders are compared but cannot be queued for removal. \
+                                  References are chosen from protected folders first.";
+
+    #[test]
+    fn form_popups_new_scan_grows_with_matching_rules_and_shrinks_back() {
+        let (mut h, _picker) = launch("size-grow");
+        open(&mut h, DialogKind::NewScan);
+        assert_size(&h, [640.0, 528.0], "collapsed");
+
+        click(&mut h, Role::Button, "Matching rules section");
+        assert_size(&h, [640.0, 778.0], "expanded (spec §11.6, frame 36:2435)");
+        let popup = popup_rect(&h);
+        for action in ["Cancel", "Start scan"] {
+            assert!(
+                popup.contains_rect(rect_of(&h, Role::Button, action)),
+                "{action} inside the expanded popup"
+            );
+        }
+
+        click(&mut h, Role::Button, "Matching rules section");
+        assert_size(&h, [640.0, 528.0], "collapsed again");
+    }
+
+    #[test]
+    fn form_popups_expanded_new_scan_fits_a_small_window_with_its_footer_pinned() {
+        let (mut h, _picker) = launch_sized("size-small", Vec2::new(1024.0, 600.0));
+        open(&mut h, DialogKind::NewScan);
+        click(&mut h, Role::Button, "Matching rules section");
+
+        // Constrained to the viewport less the 16-unit inset on each side.
+        assert_size(&h, [640.0, 600.0 - 32.0], "expanded in 1024 × 600");
+        let popup = popup_rect(&h);
+        let footer = [
+            rect_of(&h, Role::Button, "Cancel"),
+            rect_of(&h, Role::Button, "Start scan"),
+        ];
+        for rect in footer {
+            assert!(
+                popup.contains_rect(rect),
+                "footer {rect:?} visible inside {popup:?}"
+            );
+        }
+
+        // The content scrolls under the footer, which stays where it was.
+        let note = h.get_by_label(PROTECTED_NOTE).rect();
+        h.get_by_label(PROTECTED_NOTE).scroll_to_me();
+        settle(&mut h);
+        assert!(
+            h.get_by_label(PROTECTED_NOTE).rect().top() < note.top() - 1.0,
+            "the content scrolled"
+        );
+        let after = [
+            rect_of(&h, Role::Button, "Cancel"),
+            rect_of(&h, Role::Button, "Start scan"),
+        ];
+        assert_eq!(after, footer, "the footer did not move");
+
+        // And Tab reaches the primary action, through every control above
+        // it (the rules header once swallowed focus), still inside the popup.
+        let mut reached = false;
+        for _ in 0..60 {
+            press(&mut h, Key::Tab);
+            settle(&mut h);
+            if h.get_by_role_and_label(Role::Button, "Start scan")
+                .is_focused()
+            {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "Tab reaches Start scan");
+        assert!(popup_rect(&h).contains_rect(rect_of(&h, Role::Button, "Start scan")));
+    }
+
+    /// The design scenario's fuzzy row: queueing it needs review, which
+    /// opens Review unique text for it and its reference.
+    const FUZZY_ROW: &str = "Design_Spec_draft.txt";
+
+    #[test]
+    fn form_popups_every_other_popup_opens_at_its_reference_size() {
+        let (mut h, _picker) = launch("size-others");
+        let others = [
+            DialogKind::MatchingRules,
+            DialogKind::UniqueTextReview,
+            DialogKind::QueueIdentical,
+            DialogKind::Cleanup,
+            DialogKind::KeyboardShortcuts,
+            DialogKind::About,
+        ];
+        for kind in others {
+            match kind {
+                DialogKind::MatchingRules => open(&mut h, kind),
+                DialogKind::UniqueTextReview => {
+                    let results = state(&h).scan.results.clone().expect("results");
+                    let member = results
+                        .groups
+                        .iter()
+                        .flat_map(|g| g.members.iter())
+                        .find(|m| m.name == FUZZY_ROW)
+                        .expect("the fuzzy row");
+                    let MemberRole::Member(link) = member.role else {
+                        panic!("{FUZZY_ROW} is a reference");
+                    };
+                    push(
+                        &mut h,
+                        UiIntent::Review {
+                            command: ReviewCommand::RequestQueue {
+                                file: member.file,
+                                counterpart: link.counterpart,
+                                origin: QueueOrigin::Shortcut,
+                                reviewed: None,
+                            },
+                            invoker: None,
+                        },
+                    );
+                }
+                _ => {
+                    let subject = if kind == DialogKind::QueueIdentical {
+                        DialogSubject::QueueIdentical(QueueScope::AllByteIdenticalGroups)
+                    } else {
+                        DialogSubject::None
+                    };
+                    push(
+                        &mut h,
+                        UiIntent::OpenDialog {
+                            kind,
+                            subject,
+                            invoker: None,
+                        },
+                    );
+                }
+            }
+            assert_eq!(open_dialog(&h), Some(kind));
+            assert_size(&h, kind.reference_size(), &format!("{kind:?}"));
+            press(&mut h, Key::Escape);
+            settle(&mut h);
+            assert_eq!(open_dialog(&h), None, "{kind:?} closed");
+        }
     }
 }

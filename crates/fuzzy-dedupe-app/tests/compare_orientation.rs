@@ -34,8 +34,8 @@ mod compare_orientation {
     use fuzzy_dedupe_app::presentation::state::{
         CompareState, DialogKind, DialogSubject, PresentationState,
     };
-    use fuzzy_dedupe_app::ui::theme;
     use fuzzy_dedupe_app::ui::widgets::diff_view;
+    use fuzzy_dedupe_app::ui::{glyphs, theme};
     use fuzzy_dedupe_domain::{CompareMode, FileId, QueueOrigin, ScanResults};
     use fuzzy_dedupe_engine::compare::AlignedComparison;
     use fuzzy_dedupe_engine::fixtures::design::{self, ComparedPair};
@@ -218,6 +218,7 @@ mod compare_orientation {
                 (compare, false),
             );
         theme::install(&harness.ctx, Vec::new());
+        glyphs::install(&harness.ctx);
         harness.state_mut().1 = true;
         harness.run();
         harness

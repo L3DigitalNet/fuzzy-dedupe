@@ -47,6 +47,7 @@ use crate::presentation::projections::{
     self, FindingsProjection, ProjectionKey, QueueBox, VisibleRow,
 };
 use crate::presentation::state::{ColumnId, FindingsState, QueueState, RowId, ScanState};
+use crate::ui::glyphs;
 use crate::ui::theme::{self, CompactStyle, Icon, Palette, Token};
 use crate::ui::widgets::dialog_host::mode_of;
 
@@ -128,63 +129,6 @@ pub fn column_width(findings: &FindingsState, column: ColumnId) -> f32 {
         .get(&column)
         .copied()
         .unwrap_or_else(|| column.reference_width())
-}
-
-// Private-use code points for the table's Lucide icons, drawn as glyphs so
-// they take the text colour (see the note above the icon table in
-// theme.rs). Distinct from the shell's U+E100..U+E103.
-const GLYPHS: [(Icon, char); 7] = [
-    (Icon::Expanded, '\u{E110}'),
-    (Icon::Collapsed, '\u{E111}'),
-    (Icon::Document, '\u{E112}'),
-    (Icon::RowMenu, '\u{E113}'),
-    (Icon::Check, '\u{E114}'),
-    (Icon::Search, '\u{E115}'),
-    (Icon::Alert, '\u{E116}'),
-];
-
-fn glyph(icon: Icon) -> char {
-    GLYPHS
-        .iter()
-        .find(|(candidate, _)| *candidate == icon)
-        .map_or('\u{FFFD}', |(_, ch)| *ch)
-}
-
-fn glyphs_flag() -> Id {
-    Id::unique("fd.findings.glyphs")
-}
-
-/// Registers the Findings icon glyphs once per context. egui rebuilds its
-/// fonts only at the next pass, so [`icon_text`] draws nothing until then.
-pub fn ensure_glyphs(ctx: &egui::Context) {
-    if ctx.data(|d| d.get_temp::<u64>(glyphs_flag())).is_some() {
-        return;
-    }
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(glyphs_flag(), pass));
-    for (icon, ch) in GLYPHS {
-        match egui_extras::SvgGlyph::from_bytes(icon.bytes()) {
-            Ok(svg) => ctx.add_glyph_rasterizer(
-                svg.with_color(false)
-                    .with_baseline_offset(-0.2)
-                    .into_rasterizer(ch.to_string()),
-            ),
-            Err(err) => tracing::warn!(icon = icon.lucide_name(), %err, "icon glyph not loaded"),
-        }
-    }
-}
-
-/// `icon` as text in the current text colour, or nothing while its glyph
-/// is not yet usable. The fonts panic on a code point no font or
-/// rasterizer draws, so a glyph is never laid out in the pass that
-/// registered it.
-#[must_use]
-pub fn icon_text(ctx: &egui::Context, icon: Icon) -> String {
-    let installed = ctx.data(|d| d.get_temp::<u64>(glyphs_flag()));
-    match installed {
-        Some(pass) if ctx.cumulative_pass_nr() > pass => glyph(icon).to_string(),
-        _ => String::new(),
-    }
 }
 
 /// The current projection, rebuilt only when its key differs from the
@@ -278,7 +222,6 @@ pub fn show(
     let results = scan.results.clone()?;
     let projection = refresh_projection(findings, scan, queue)?;
     let restoring = note_drawn(ui.ctx());
-    ensure_glyphs(ui.ctx());
     let palette = theme::palette(mode_of(ui.ctx()));
     let window_width = ui.ctx().content_rect().width();
     let columns = visible_columns(findings, window_width);
@@ -870,7 +813,11 @@ impl Delegate<'_> {
                 } else {
                     Icon::Collapsed
                 };
-                let chevron = self.text(icon_text(ui.ctx(), icon), CompactStyle::Table, Token::Ink);
+                let chevron = self.text(
+                    glyphs::text(ui.ctx(), icon).unwrap_or_default(),
+                    CompactStyle::Table,
+                    Token::Ink,
+                );
                 let name = strong(self, projections::group_label(group), Token::Ink);
                 padded(ui, |ui| {
                     label(ui, chevron);
@@ -918,7 +865,11 @@ impl Delegate<'_> {
             ColumnId::Match => plain(self, projections::match_label(group, &view), Token::Ink),
             ColumnId::Unique => plain(self, projections::unique_label(&view), Token::Muted),
             ColumnId::FileName => {
-                let icon = plain(self, icon_text(ui.ctx(), Icon::Document), Token::Muted);
+                let icon = plain(
+                    self,
+                    glyphs::text(ui.ctx(), Icon::Document).unwrap_or_default(),
+                    Token::Muted,
+                );
                 let name = plain(self, member.name.clone(), Token::Ink);
                 padded(ui, |ui| {
                     label(ui, icon);
@@ -975,7 +926,7 @@ impl Delegate<'_> {
         let text = self.text(decision, style, token);
         let focused = self.findings.focused == Some(row.id);
         let more = self.text(
-            icon_text(ui.ctx(), Icon::RowMenu),
+            glyphs::text(ui.ctx(), Icon::RowMenu).unwrap_or_default(),
             CompactStyle::Table,
             Token::Muted,
         );
@@ -1053,7 +1004,7 @@ impl Delegate<'_> {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                icon_text(ui.ctx(), Icon::Check),
+                glyphs::text(ui.ctx(), Icon::Check).unwrap_or_default(),
                 egui::FontId::new(14.0, CompactStyle::Table.font_id().family),
                 palette.color(Token::White),
             );
